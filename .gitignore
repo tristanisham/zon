@@ -1,2 +1,4 @@
-.claude
-.remember
+# Go
+*.test
+*.out
+/cmd/zon/zon
