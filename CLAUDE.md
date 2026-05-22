@@ -19,13 +19,16 @@ Working notes for the `github.com/tristanisham/zon` library and `cmd/zon` CLI.
 - [x] streaming Encoder/Decoder
 - [x] initial unit + round-trip tests (82.3% coverage at last run)
 
-### TDD correctness validation (challenge assumptions) — NOT STARTED
-- [ ] Verify the real ZON grammar against Zig `std.zon` (web/spec check)
-- [ ] One failing-first test per validated/refuted assumption below
-- [ ] Fix library where behavior diverges from the spec
+### TDD correctness validation (challenge assumptions) — DONE
+- [x] Verify the real ZON grammar against Zig `std.zon` (web/spec check)
+- [x] One failing-first test per validated/refuted assumption (see `spec_test.go`)
+- [x] Fix library where behavior diverges from the spec
+- Result: only one real bug — leading-zero decimals were accepted as octal.
+  Fixed in `lexer.go` (rejected at lex time). inf/nan, char literals, `//`-only
+  comments, hex/oct/bin leading-zero digits, enum round-trip all confirmed correct.
 
-### Benchmarks for the full ZON spec — NOT STARTED (10-way partition)
-- [ ] Decide isolation strategy (git worktrees vs shared-dir unique files)
+### Benchmarks for the full ZON spec — IN PROGRESS (10-way partition)
+- [x] Isolation strategy: git init + per-agent worktrees (decided with user)
 - [ ] Dispatch agents per partition (see below), unique file + symbol prefix each
 - [ ] Integrate + run `go test -bench=. -benchmem` clean
 
@@ -33,25 +36,23 @@ Working notes for the `github.com/tristanisham/zon` library and `cmd/zon` CLI.
 - [ ] Approve design (gojq-backed, ZON/JSON in; ZON/JSON/YAML/TOML/raw out)
 - [ ] Implement after library is validated
 
-## Assumptions to validate (challenge these with tests + spec)
+## Assumptions — VALIDATED against the ZON spec (Ziggit spec thread + ANTLR grammar)
 
-These are baked into the current lexer/parser/encoder and may be WRONG:
-
-1. **`inf` / `nan` are valid ZON floats.** Suspect — Zig `std.zon` may not accept bare
-   `inf`/`nan`. If not, remove from parser/encoder.
-2. **Leading-zero decimal → octal.** `parseInt` uses `strconv.ParseInt(raw, 0, 64)`, so
-   `0123` parses as octal. ZON likely forbids leading-zero ints entirely. Decide + test.
-3. **`//` line comments only.** Confirm ZON has no block/doc comments to skip.
-4. **Multiline string continuation** ends at a blank line / non-`\\` line. Verify joining
-   rule and trailing-newline semantics against Zig.
-5. **Char literal `'a'` decodes to its integer codepoint.** Confirm ZON even allows char
-   literals as values, and the intended Go mapping.
-6. **`-` is only a numeric sign** (handled via `tokenMinus`). Confirm no other unary use.
-7. **Empty `.{}`** is treated as an empty tuple that also decodes into struct/map. Confirm.
-8. **Top-level value may be any ZON value**, not only a struct.
-9. **Hex floats `0x1.8p4`, underscores, `0o`/`0b`** are all in-spec.
-10. **Encoder emits floats with `.0`** to avoid round-tripping as ints — confirm this is
-    valid ZON float syntax (vs requiring an explicit type).
+1. ✅ **`inf` / `nan` are valid ZON floats.** WRONG to suspect — they are the one thing
+   ZON adds on top of Zig's literal subset. Support kept; covered by `TestSpecInfNanRoundTrip`.
+2. ❌→FIXED **Leading-zero decimal.** Was accepted as octal (`0123`→83). Zig/ZON forbids it.
+   Now rejected in the lexer. Covered by `TestLeadingZeroIntegerRejected`. Leading-zero
+   digits inside hex/oct/bin remain valid (`TestSpecLeadingZeroDigitsInOtherBases`).
+3. ✅ **`//` line comments only.** Confirmed (ANTLR grammar: `LineComment '//' ~[\r\n]*`);
+   Zig has no block comments.
+4. ✅ **Multiline string** joins `\\` lines with `\n`, no trailing newline, blank line ends it.
+5. ✅ **Char literal `'a'`** is a valid value, decodes to its integer codepoint
+   (`TestSpecCharLiteralValue`).
+6. ✅ **`-` is only a numeric sign** (ZON has no operators).
+7. ✅ **Empty `.{}`** decodes into struct/map/slice.
+8. ✅ **Top-level value may be any ZON value**, not only a struct.
+9. ✅ **Hex floats, underscores, `0o`/`0b`** in-spec.
+10. ✅ **Encoder emits floats with `.0`** so they re-parse as floats.
 
 ## Benchmark partition (10 agents, one file each, prefix `Benchmark<Area>_…`)
 

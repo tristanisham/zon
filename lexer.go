@@ -126,7 +126,7 @@ func (l *lexer) scan() (token, error) {
 		}
 		return token{kind: tokenIdent, value: s, line: line, col: col}, nil
 	case isDigit(c):
-		return l.scanNumber(line, col), nil
+		return l.scanNumber(line, col)
 	case isIdentStart(c):
 		start := l.pos
 		for !l.atEnd() && isIdentPart(l.cur()) {
@@ -300,8 +300,8 @@ func (l *lexer) scanMultilineString(line, col int) (token, error) {
 
 // scanNumber reads an integer or floating-point literal and preserves its raw
 // text. It recognizes hex/octal/binary prefixes, underscores, decimal and hex
-// exponents.
-func (l *lexer) scanNumber(line, col int) token {
+// exponents. Leading zeros on decimal integers are rejected, matching Zig.
+func (l *lexer) scanNumber(line, col int) (token, error) {
 	start := l.pos
 	isFloat := false
 	switch {
@@ -346,11 +346,16 @@ func (l *lexer) scanNumber(line, col int) token {
 			l.consumeWhile(isDigitOrUnderscore)
 		}
 	}
+	raw := l.src[start:l.pos]
 	kind := tokenInt
 	if isFloat {
 		kind = tokenFloat
+	} else if len(raw) > 1 && raw[0] == '0' && (isDigit(raw[1]) || raw[1] == '_') {
+		// Decimal integer with a leading zero. Zig rejects these; octal must be
+		// written 0o.... The raw[1] guard excludes the 0x/0o/0b prefixes.
+		return token{}, l.errorf(line, col, "leading zeros are not allowed in integer literals")
 	}
-	return token{kind: kind, value: l.src[start:l.pos], line: line, col: col}
+	return token{kind: kind, value: raw, line: line, col: col}, nil
 }
 
 func (l *lexer) consumeWhile(pred func(byte) bool) {

@@ -1,0 +1,23 @@
+.{
+    // The package name, as referenced by dependents.
+    .name = "example",
+    .version = "0.3.1",
+    .minimum_zig_version = "0.13.0",
+    .dependencies = .{
+        .mecha = .{
+            .url = "https://example.com/mecha/archive/refs/tags/v0.8.0.tar.gz",
+            .hash = "1220a4e8b8a2c5e6f0a1b2c3d4e5f60718293a4b5c6d7e8f90123456789abcde",
+        },
+        .known_folders = .{
+            .url = "https://example.com/known-folders/archive/abcdef.tar.gz",
+            .hash = "12209876543210fedcba9876543210fedcba9876543210fedcba9876543210ab",
+            .lazy = true,
+        },
+    },
+    .paths = .{
+        "",
+        "src",
+        "build.zig",
+        "build.zig.zon",
+    },
+}
