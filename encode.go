@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Marshal returns the ZON encoding of v. Output is pretty-printed in the style
@@ -254,27 +255,51 @@ func marshalerFor(rv reflect.Value) (Marshaler, bool) {
 }
 
 // writeZonString writes s as a double-quoted ZON string literal with escaping.
+// It iterates byte-wise so that bytes which are not part of a valid UTF-8
+// sequence are emitted as \xNN raw-byte escapes (the decoder reads \xNN back as
+// the same byte), keeping the encoding lossless for arbitrary byte content.
 func writeZonString(b *bytes.Buffer, s string) {
 	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
+	for i := 0; i < len(s); {
+		switch s[i] {
 		case '"':
 			b.WriteString(`\"`)
+			i++
+			continue
 		case '\\':
 			b.WriteString(`\\`)
+			i++
+			continue
 		case '\n':
 			b.WriteString(`\n`)
+			i++
+			continue
 		case '\r':
 			b.WriteString(`\r`)
+			i++
+			continue
 		case '\t':
 			b.WriteString(`\t`)
-		default:
-			if r < 0x20 {
-				fmt.Fprintf(b, `\x%02x`, r)
-			} else {
-				b.WriteRune(r)
-			}
+			i++
+			continue
 		}
+		if c := s[i]; c < 0x20 {
+			fmt.Fprintf(b, `\x%02x`, c)
+			i++
+			continue
+		} else if c < utf8.RuneSelf {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			fmt.Fprintf(b, `\x%02x`, s[i])
+			i++
+			continue
+		}
+		b.WriteString(s[i : i+size])
+		i += size
 	}
 	b.WriteByte('"')
 }

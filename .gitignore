@@ -1,4 +1,4 @@
 # Go
 *.test
 *.out
-/cmd/zon/zon
+test/data

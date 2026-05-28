@@ -153,6 +153,20 @@ func (l *lexer) scanStringBody(line, col int) (string, error) {
 			return b.String(), nil
 		}
 		if c == '\\' {
+			// In a string, \xNN is a raw byte escape (it may produce bytes that
+			// are not valid UTF-8). Only \u{...} introduces a codepoint. This
+			// differs from a character literal, where \xNN is an integer
+			// codepoint, so it is handled here rather than in scanEscape.
+			if l.at(1) == 'x' {
+				l.advance() // backslash
+				l.advance() // x
+				v, err := l.readHex(2)
+				if err != nil {
+					return "", err
+				}
+				b.WriteByte(byte(v))
+				continue
+			}
 			r, err := l.scanEscape(line, col)
 			if err != nil {
 				return "", err

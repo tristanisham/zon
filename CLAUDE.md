@@ -27,10 +27,31 @@ Working notes for the `github.com/tristanisham/zon` library and `cmd/zon` CLI.
   Fixed in `lexer.go` (rejected at lex time). inf/nan, char literals, `//`-only
   comments, hex/oct/bin leading-zero digits, enum round-trip all confirmed correct.
 
-### Benchmarks for the full ZON spec — IN PROGRESS (10-way partition)
+### Benchmarks for the full ZON spec — DONE (10-way partition)
 - [x] Isolation strategy: git init + per-agent worktrees (decided with user)
-- [ ] Dispatch agents per partition (see below), unique file + symbol prefix each
-- [ ] Integrate + run `go test -bench=. -benchmem` clean
+- [x] 10 `bench_*_test.go` files, one per partition, unique symbol prefix each
+- [x] Integrate + run `go test -bench=. -benchmem` clean (all targets pass, vet/gofmt clean)
+- Note: written inline (not via parallel agents); `b.Loop()` + `b.ReportAllocs()`.
+
+### Fuzzing — DONE
+- [x] `fuzz_test.go`: FuzzUnmarshalNoPanic, FuzzLexNoPanic, FuzzParseNoPanic,
+  FuzzMarshalUnmarshalRoundTrip (~45 shared seeds). No panics in ~1.7M/1.5M execs.
+- [x] **Non-UTF-8 encoder lossiness bug — FIXED.** Was: lexer copies raw bytes into
+  string/`@"..."`/multiline literals, but `writeZonString` ranged over runes and
+  emitted U+FFFD for invalid bytes, so `\\<0xFF>` round-tripped to `"�"`. Root cause
+  was deeper than the encoder: `\xNN` in a string decoded via `WriteRune` to a
+  *codepoint* (`"\xff"`→U+00FF), so no escape could reproduce a raw byte. Fix (both
+  sides, matching Zig byte-escape semantics):
+  - `lexer.go` `scanStringBody`: `\xNN` in a string now writes a raw byte
+    (char literals keep codepoint semantics via `scanEscape`).
+  - `encode.go` `writeZonString`: iterates byte-wise, emits `\xNN` for any byte not
+    part of a valid UTF-8 sequence (and for control bytes < 0x20).
+  - Pinned by `TestNonUTF8StringRoundTrips` + `TestStringHexEscapeIsRawByte`; round-trip
+    fuzzer no longer skips non-UTF-8 inputs. Regression seeds remain under
+    `testdata/fuzz/FuzzMarshalUnmarshalRoundTrip/`.
+  - ⚠️ Behavior change: `"\xNN"` in a string now decodes to a single raw byte instead
+    of codepoint U+00NN. Spec-correct (Zig), but a breaking change for any caller that
+    relied on the old `\x`→codepoint decoding.
 
 ### CLI `cmd/zon` (jq-for-zon) — DESIGN PARKED, awaiting approval
 - [ ] Approve design (gojq-backed, ZON/JSON in; ZON/JSON/YAML/TOML/raw out)
