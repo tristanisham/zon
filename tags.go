@@ -51,11 +51,13 @@ func typeFields(t reflect.Type) structInfo {
 
 type tagOptions string
 
+// parseTag splits a struct tag into the field name and any additional options.
 func parseTag(tag string) (string, tagOptions) {
 	name, opt, _ := strings.Cut(tag, ",")
 	return name, tagOptions(opt)
 }
 
+// contains reports whether the specified option is present in the tag options.
 func (o tagOptions) contains(opt string) bool {
 	s := string(o)
 	for s != "" {

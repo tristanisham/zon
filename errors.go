@@ -13,6 +13,7 @@ type SyntaxError struct {
 	Col  int
 }
 
+// Error returns a formatted string representation of the syntax error.
 func (e *SyntaxError) Error() string {
 	return fmt.Sprintf("zon: %s (line %d, column %d)", e.msg, e.Line, e.Col)
 }
@@ -24,6 +25,7 @@ type UnmarshalTypeError struct {
 	Type  reflect.Type // the Go type it could not be assigned to
 }
 
+// Error returns a formatted string describing the unmarshal type error.
 func (e *UnmarshalTypeError) Error() string {
 	return "zon: cannot unmarshal " + e.Value + " into Go value of type " + e.Type.String()
 }
@@ -34,6 +36,7 @@ type UnsupportedTypeError struct {
 	Type reflect.Type
 }
 
+// Error returns a formatted string describing the unsupported type error.
 func (e *UnsupportedTypeError) Error() string {
 	return "zon: unsupported type: " + e.Type.String()
 }
@@ -44,6 +47,7 @@ type InvalidUnmarshalError struct {
 	Type reflect.Type
 }
 
+// Error returns a formatted string describing the invalid unmarshal argument.
 func (e *InvalidUnmarshalError) Error() string {
 	if e.Type == nil {
 		return "zon: Unmarshal(nil)"

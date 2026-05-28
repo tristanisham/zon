@@ -30,6 +30,7 @@ func MarshalIndent(v any, prefix, indent string) ([]byte, error) {
 	return marshal(v, prefix, indent)
 }
 
+// marshal performs the actual marshalling process with the specified prefix and indent.
 func marshal(v any, prefix, indent string) ([]byte, error) {
 	e := &encodeState{prefix: prefix, indent: indent}
 	if err := e.encode(reflect.ValueOf(v)); err != nil {
@@ -39,10 +40,11 @@ func marshal(v any, prefix, indent string) ([]byte, error) {
 }
 
 type encodeState struct {
-	buf    bytes.Buffer
-	prefix string
-	indent string
-	depth  int
+	buf            bytes.Buffer
+	prefix         string
+	indent         string
+	depth          int
+	recursionDepth int
 }
 
 var (
@@ -50,7 +52,16 @@ var (
 	enumLiteralType = reflect.TypeFor[EnumLiteral]()
 )
 
+const maxEncodeDepth = 1000
+
+// encode recursively encodes reflect.Value into ZON format in the buffer.
 func (e *encodeState) encode(rv reflect.Value) error {
+	e.recursionDepth++
+	if e.recursionDepth > maxEncodeDepth {
+		return fmt.Errorf("zon: exceeded maximum encoding depth limit of %d (possible circular reference)", maxEncodeDepth)
+	}
+	defer func() { e.recursionDepth-- }()
+
 	if rv.IsValid() {
 		if m, ok := marshalerFor(rv); ok {
 			raw, err := m.MarshalZON()
@@ -110,6 +121,7 @@ func (e *encodeState) encode(rv reflect.Value) error {
 	}
 }
 
+// encodeFloat encodes a floating-point value into the buffer, preserving nan/inf and suffixing with .0 if needed.
 func (e *encodeState) encodeFloat(f float64, bits int) {
 	switch {
 	case math.IsInf(f, 1):
@@ -128,6 +140,7 @@ func (e *encodeState) encodeFloat(f float64, bits int) {
 	}
 }
 
+// encodeArray encodes a slice or array value into a ZON aggregate value.
 func (e *encodeState) encodeArray(rv reflect.Value) error {
 	n := rv.Len()
 	if n == 0 {
@@ -149,6 +162,7 @@ func (e *encodeState) encodeArray(rv reflect.Value) error {
 	return nil
 }
 
+// encodeStruct encodes a Go struct value into a ZON anonymous struct aggregate.
 func (e *encodeState) encodeStruct(rv reflect.Value) error {
 	info := typeFields(rv.Type())
 	type entry struct {
@@ -183,6 +197,7 @@ func (e *encodeState) encodeStruct(rv reflect.Value) error {
 	return nil
 }
 
+// encodeMap encodes a Go map value with string keys into a ZON anonymous struct aggregate.
 func (e *encodeState) encodeMap(rv reflect.Value) error {
 	if rv.Type().Key().Kind() != reflect.String {
 		return &UnsupportedTypeError{Type: rv.Type()}
@@ -220,6 +235,7 @@ func (e *encodeState) writeKey(name string) {
 	}
 }
 
+// writeIndent writes a newline and the appropriate level of indentation to the buffer.
 func (e *encodeState) writeIndent() {
 	if e.indent == "" {
 		return
@@ -240,6 +256,7 @@ func (e *encodeState) writeSeparator(last bool) {
 	}
 }
 
+// marshalerFor returns the Marshaler implementation if rv (or its pointer type) implements Marshaler.
 func marshalerFor(rv reflect.Value) (Marshaler, bool) {
 	t := rv.Type()
 	if t.Implements(marshalerType) {
@@ -315,6 +332,7 @@ func writeFieldName(b *bytes.Buffer, name string) {
 	writeZonString(b, name)
 }
 
+// isValidIdent reports whether the given string is a valid bare ZON identifier (no @"..." quote needed).
 func isValidIdent(s string) bool {
 	if s == "" {
 		return false
@@ -330,6 +348,7 @@ func isValidIdent(s string) bool {
 	return true
 }
 
+// isEmptyValue reports whether the Go reflect.Value represents a zero or empty value.
 func isEmptyValue(v reflect.Value) bool {
 	switch v.Kind() {
 	case reflect.Array, reflect.Map, reflect.Slice, reflect.String:

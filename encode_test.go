@@ -154,3 +154,20 @@ func TestMarshalUnsupportedType(t *testing.T) {
 		t.Errorf("error type = %T, want *UnsupportedTypeError", err)
 	}
 }
+
+type CircularNode struct {
+	Self *CircularNode `zon:"self"`
+}
+
+func TestMarshalMaxDepth(t *testing.T) {
+	node := CircularNode{}
+	node.Self = &node
+
+	_, err := Marshal(node)
+	if err == nil {
+		t.Fatal("expected error for marshaling circular reference, got none")
+	}
+	if !strings.Contains(err.Error(), "exceeded maximum encoding depth limit") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}

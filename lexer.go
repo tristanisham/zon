@@ -31,8 +31,10 @@ type lexer struct {
 	col  int
 }
 
+// atEnd reports whether the lexer has reached the end of the source string.
 func (l *lexer) atEnd() bool { return l.pos >= len(l.src) }
 
+// cur returns the current byte under the lexer's cursor, or 0 if at the end.
 func (l *lexer) cur() byte {
 	if l.atEnd() {
 		return 0
@@ -40,6 +42,7 @@ func (l *lexer) cur() byte {
 	return l.src[l.pos]
 }
 
+// at returns the byte at the specified offset from the current cursor position, or 0 if out of bounds.
 func (l *lexer) at(off int) byte {
 	p := l.pos + off
 	if p >= len(l.src) {
@@ -48,6 +51,7 @@ func (l *lexer) at(off int) byte {
 	return l.src[p]
 }
 
+// advance consumes the current byte, updates position, line, and column numbers, and returns it.
 func (l *lexer) advance() byte {
 	c := l.src[l.pos]
 	l.pos++
@@ -60,6 +64,7 @@ func (l *lexer) advance() byte {
 	return c
 }
 
+// errorf returns a SyntaxError with the current position and formatted message.
 func (l *lexer) errorf(line, col int, format string, args ...any) error {
 	return &SyntaxError{msg: fmt.Sprintf(format, args...), Line: line, Col: col}
 }
@@ -81,6 +86,7 @@ func (l *lexer) skipTrivia() {
 	}
 }
 
+// scan scans and returns the next token from the source input.
 func (l *lexer) scan() (token, error) {
 	l.skipTrivia()
 	line, col := l.line, l.col
@@ -208,6 +214,7 @@ func (l *lexer) scanEscape(line, col int) (rune, error) {
 	}
 }
 
+// readHex reads n hexadecimal digits and returns their combined numeric rune value.
 func (l *lexer) readHex(n int) (rune, error) {
 	var v rune
 	for range n {
@@ -372,24 +379,31 @@ func (l *lexer) scanNumber(line, col int) (token, error) {
 	return token{kind: kind, value: raw, line: line, col: col}, nil
 }
 
+// consumeWhile advances the lexer cursor as long as the predicate function returns true.
 func (l *lexer) consumeWhile(pred func(byte) bool) {
 	for !l.atEnd() && pred(l.cur()) {
 		l.advance()
 	}
 }
 
+// isDigit reports whether c is a decimal digit.
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
+// isIdentStart reports whether c is a valid starting character for a bare identifier.
 func isIdentStart(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
 }
 
+// isIdentPart reports whether c is a valid interior character for a bare identifier.
 func isIdentPart(c byte) bool { return isIdentStart(c) || isDigit(c) }
 
+// isDigitOrUnderscore reports whether c is a decimal digit or an underscore separator.
 func isDigitOrUnderscore(c byte) bool { return isDigit(c) || c == '_' }
 
+// isHexOrUnderscore reports whether c is a valid hexadecimal digit or an underscore separator.
 func isHexOrUnderscore(c byte) bool { return hexVal(c) >= 0 || c == '_' }
 
+// hexVal returns the integer value of a hexadecimal digit character, or -1 if invalid.
 func hexVal(c byte) int {
 	switch {
 	case c >= '0' && c <= '9':

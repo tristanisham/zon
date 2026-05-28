@@ -28,6 +28,7 @@ func Unmarshal(data []byte, v any) error {
 	return decodeNode(root, rv.Elem())
 }
 
+// decodeNode recursively decodes an AST node into the target Go reflection value.
 func decodeNode(n node, rv reflect.Value) error {
 	if _, ok := n.(nullNode); ok {
 		if rv.CanSet() {
@@ -105,6 +106,7 @@ func indirect(v reflect.Value) (Unmarshaler, reflect.Value) {
 	return nil, v
 }
 
+// decodeBool decodes a boolean AST node into the target Go value.
 func decodeBool(nd boolNode, rv reflect.Value) error {
 	switch rv.Kind() {
 	case reflect.Bool:
@@ -119,6 +121,7 @@ func decodeBool(nd boolNode, rv reflect.Value) error {
 	return &UnmarshalTypeError{Value: "bool", Type: rv.Type()}
 }
 
+// decodeString decodes a string AST node value into the target Go value.
 func decodeString(s, desc string, rv reflect.Value) error {
 	switch rv.Kind() {
 	case reflect.String:
@@ -133,6 +136,7 @@ func decodeString(s, desc string, rv reflect.Value) error {
 	return &UnmarshalTypeError{Value: desc, Type: rv.Type()}
 }
 
+// decodeEnum decodes an enum literal AST node into the target Go value.
 func decodeEnum(nd enumNode, rv reflect.Value) error {
 	switch rv.Kind() {
 	case reflect.String:
@@ -147,6 +151,7 @@ func decodeEnum(nd enumNode, rv reflect.Value) error {
 	return &UnmarshalTypeError{Value: "enum literal", Type: rv.Type()}
 }
 
+// decodeNumber decodes a number AST node into the target Go numeric type.
 func decodeNumber(nd numberNode, rv reflect.Value) error {
 	switch rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -178,6 +183,7 @@ func decodeNumber(nd numberNode, rv reflect.Value) error {
 	return numErr(nd, rv)
 }
 
+// decodeNumberToAny decodes a number AST node into an interface{} (any), deciding the narrowest matching type.
 func decodeNumberToAny(nd numberNode, rv reflect.Value) error {
 	if nd.isFloat {
 		f, err := parseFloat(nd.raw)
@@ -202,10 +208,12 @@ func decodeNumberToAny(nd numberNode, rv reflect.Value) error {
 	return numErr(nd, rv)
 }
 
+// numErr returns an UnmarshalTypeError for an invalid or non-matching number literal.
 func numErr(nd numberNode, rv reflect.Value) error {
 	return &UnmarshalTypeError{Value: "number " + nd.raw, Type: rv.Type()}
 }
 
+// decodeStruct decodes a ZON struct node into a Go struct, map, or interface{}.
 func decodeStruct(nd structNode, rv reflect.Value) error {
 	switch rv.Kind() {
 	case reflect.Struct:
@@ -240,6 +248,7 @@ func decodeStruct(nd structNode, rv reflect.Value) error {
 	return &UnmarshalTypeError{Value: "struct", Type: rv.Type()}
 }
 
+// decodeStructToMap decodes a ZON struct node into a Go map.
 func decodeStructToMap(nd structNode, rv reflect.Value) error {
 	t := rv.Type()
 	if t.Key().Kind() != reflect.String {
@@ -260,6 +269,7 @@ func decodeStructToMap(nd structNode, rv reflect.Value) error {
 	return nil
 }
 
+// decodeTuple decodes a ZON tuple node into a Go slice, array, or interface{}.
 func decodeTuple(nd tupleNode, rv reflect.Value) error {
 	switch rv.Kind() {
 	case reflect.Slice:
@@ -304,8 +314,13 @@ func decodeTuple(nd tupleNode, rv reflect.Value) error {
 	return &UnmarshalTypeError{Value: "array", Type: rv.Type()}
 }
 
-func parseInt(raw string) (int64, error)   { return strconv.ParseInt(raw, 0, 64) }
+// parseInt parses a raw numeric literal string as an int64.
+func parseInt(raw string) (int64, error) { return strconv.ParseInt(raw, 0, 64) }
+
+// parseUint parses a raw numeric literal string as a uint64.
 func parseUint(raw string) (uint64, error) { return strconv.ParseUint(raw, 0, 64) }
+
+// parseFloat parses a raw numeric literal string as a float64.
 func parseFloat(raw string) (float64, error) {
 	return strconv.ParseFloat(raw, 64)
 }
@@ -318,6 +333,7 @@ func renderNode(n node) []byte {
 	return b.Bytes()
 }
 
+// renderNodeTo serializes a parsed node recursively to a compact bytes buffer.
 func renderNodeTo(b *bytes.Buffer, n node) {
 	switch nd := n.(type) {
 	case nullNode:

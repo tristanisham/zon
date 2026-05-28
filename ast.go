@@ -45,10 +45,23 @@ type boolNode struct {
 
 type nullNode struct{}
 
+// isNode implements the node interface for structNode.
 func (structNode) isNode() {}
-func (tupleNode) isNode()  {}
+
+// isNode implements the node interface for tupleNode.
+func (tupleNode) isNode() {}
+
+// isNode implements the node interface for stringNode.
 func (stringNode) isNode() {}
-func (enumNode) isNode()   {}
+
+// isNode implements the node interface for enumNode.
+func (enumNode) isNode() {}
+
+// isNode implements the node interface for numberNode.
 func (numberNode) isNode() {}
-func (boolNode) isNode()   {}
-func (nullNode) isNode()   {}
+
+// isNode implements the node interface for boolNode.
+func (boolNode) isNode() {}
+
+// isNode implements the node interface for nullNode.
+func (nullNode) isNode() {}

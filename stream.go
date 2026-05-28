@@ -47,6 +47,9 @@ type Decoder struct {
 }
 
 // NewDecoder returns a new decoder that reads from r.
+//
+// If the input source is untrusted, consider wrapping r with an io.LimitReader
+// to prevent memory exhaustion from excessively large inputs.
 func NewDecoder(r io.Reader) *Decoder {
 	return &Decoder{r: r}
 }

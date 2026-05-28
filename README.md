@@ -12,6 +12,334 @@ The express goal of this library is to provide a simple, easy-to-use interface f
 go get github.com/tristanisham/zon
 ```
 
+# Using the Go Library
+
+The `zon` package provides a simple, familiar API mirroring `encoding/json` for unmarshaling, marshaling, streaming, and custom formatting of ZON data.
+
+## 1. Unmarshaling (Decoding) ZON
+
+### Decoding into Custom Structs
+You can unmarshal ZON data into custom Go structs using the `zon` struct tag. 
+- Struct tags specify the matching ZON field name (e.g. `zon:"url"`).
+- `omitempty` can be used on struct fields to indicate that they should be skipped when their value is empty.
+- Fields tagged with `zon:"-"` are completely ignored during decoding and encoding.
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/tristanisham/zon"
+)
+
+type Dependency struct {
+	URL  string `zon:"url"`
+	Hash string `zon:"hash"`
+}
+
+type Manifest struct {
+	Name         string                `zon:"name"`
+	Version      string                `zon:"version,omitempty"` // Omitted if empty
+	Dependencies map[string]Dependency `zon:"dependencies"`
+	Paths        []string              `zon:"paths"`
+	InternalID   string                `zon:"-"`                 // Ignored completely
+}
+
+func main() {
+	src := `.{
+        .name = "my_project",
+        .version = "0.1.0",
+        .dependencies = .{
+            .mecha = .{
+                .url = "https://example.com/mecha.tar.gz",
+                .hash = "abc123xyz",
+            },
+        },
+        .paths = .{
+            "build.zig",
+            "src",
+        },
+    }`
+
+	var m Manifest
+	if err := zon.Unmarshal([]byte(src), &m); err != nil {
+		panic(err)
+	}
+
+	fmt.Printf("Parsed project name: %s\n", m.Name)
+	fmt.Printf("Dependency URL: %s\n", m.Dependencies["mecha"].URL)
+	fmt.Printf("Paths: %v\n", m.Paths)
+}
+```
+
+### Decoding into Generic `any` Values
+When decoding ZON data into a generic `any` value, the types are mapped to standard Go types and types defined by this library:
+- Anonymous structs (e.g. `.{ .a = 1 }`) decode to `map[string]any`.
+- Anonymous tuples/arrays (e.g. `.{ "x", true }`) decode to `[]any`.
+- Strings decode to `string`.
+- Numbers decode to `int64` (for integers) or `float64` (for floats).
+- Boolean values decode to `bool`.
+- Enum literals (e.g. `.debug`) decode to `zon.EnumLiteral`.
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/tristanisham/zon"
+)
+
+func main() {
+	src := `.{
+        .name = "my_project",
+        .version = "1.0.0",
+        .active = true,
+        .tags = .{ .debug, .release },
+    }`
+
+	var val any
+	if err := zon.Unmarshal([]byte(src), &val); err != nil {
+		panic(err)
+	}
+
+	// Since we decoded into `any`, this is represented as a map[string]any
+	data, ok := val.(map[string]any)
+	if !ok {
+		panic("expected a map[string]any")
+	}
+
+	fmt.Println("Name:", data["name"])
+	fmt.Println("Active:", data["active"])
+
+	// Tuple is parsed as a slice of any
+	tags := data["tags"].([]any)
+	for _, tag := range tags {
+		// Enum literals decode to the special zon.EnumLiteral type
+		if enum, ok := tag.(zon.EnumLiteral); ok {
+			fmt.Printf("EnumLiteral value: .%s\n", enum)
+		}
+	}
+}
+```
+
+## 2. Marshaling (Encoding) ZON
+
+### Encoding Go Structs to ZON
+By default, `zon.Marshal` produces pretty-printed, indented output. If you prefer compact, single-line output, you can use `zon.MarshalIndent` with empty prefixes and indents.
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/tristanisham/zon"
+)
+
+type Config struct {
+	Name    string   `zon:"name"`
+	Version string   `zon:"version,omitempty"`
+	Debug   bool     `zon:"debug"`
+	Secret  string   `zon:"-"`
+}
+
+func main() {
+	cfg := Config{
+		Name:    "demo",
+		Debug:   true,
+		Secret:  "super-secret",
+	}
+
+	// 1. Pretty-printed (default with 4-space indentation)
+	prettyBytes, err := zon.Marshal(cfg)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("--- Pretty Output ---")
+	fmt.Println(string(prettyBytes))
+
+	// 2. Compact Format (single-line)
+	compactBytes, err := zon.MarshalIndent(cfg, "", "")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("--- Compact Output ---")
+	fmt.Println(string(compactBytes))
+}
+```
+
+### Working with `EnumLiteral`
+The `zon.EnumLiteral` type allows you to generate native ZON enum literals (prefixed with `.`) rather than plain strings when marshaling.
+- An `EnumLiteral("debug")` will encode to `.debug`.
+- A plain Go string `"debug"` will encode to `"debug"`.
+
+```go
+package main
+
+import (
+	"fmt"
+
+	"github.com/tristanisham/zon"
+)
+
+type ModeConfig struct {
+	Mode zon.EnumLiteral `zon:"mode"`
+	Name string          `zon:"name"`
+}
+
+func main() {
+	cfg := ModeConfig{
+		Mode: zon.EnumLiteral("debug"),
+		Name: "debug",
+	}
+
+	out, err := zon.Marshal(cfg)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(string(out))
+	// Output:
+	// .{
+	//     .mode = .debug,
+	//     .name = "debug",
+	// }
+}
+```
+
+## 3. Streaming Encoder/Decoder
+
+If you are reading or writing ZON files or streams of ZON documents from an `io.Reader` or to an `io.Writer`, you should use `zon.NewDecoder` and `zon.NewEncoder`.
+
+```go
+package main
+
+import (
+	"bytes"
+	"fmt"
+	"strings"
+
+	"github.com/tristanisham/zon"
+)
+
+type Package struct {
+	Name    string `zon:"name"`
+	Version string `zon:"version"`
+}
+
+func main() {
+	// Streaming Decoders read the entire input stream to parse a ZON document
+	input := `.{ .name = "compiler", .version = "0.11.0" }`
+	reader := strings.NewReader(input)
+	
+	decoder := zon.NewDecoder(reader)
+	var pkg Package
+	if err := decoder.Decode(&pkg); err != nil {
+		panic(err)
+	}
+	fmt.Printf("Decoded: %s @ %s\n", pkg.Name, pkg.Version)
+
+	// Streaming Encoders write pretty-printed output by default.
+	// You can customize the indentation using SetIndent.
+	var buf bytes.Buffer
+	encoder := zon.NewEncoder(&buf)
+	
+	// Optional: Make it compact (single-line) by setting empty indent
+	// encoder.SetIndent("", "")
+
+	if err := encoder.Encode(pkg); err != nil {
+		panic(err)
+	}
+	fmt.Println("Encoded stream output:")
+	fmt.Print(buf.String())
+}
+```
+
+## 4. Custom Marshaling
+
+You can implement custom ZON marshaling and unmarshaling on custom types by satisfying the `zon.Marshaler` and `zon.Unmarshaler` interfaces.
+
+- `MarshalZON() ([]byte, error)`: Returns a slice of bytes representing a single, valid ZON value that is written verbatim.
+- `UnmarshalZON([]byte) error`: Receives a byte slice containing the single ZON value to decode.
+
+```go
+package main
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+
+	"github.com/tristanisham/zon"
+)
+
+// SemVer represents a semantic version which we want to marshal as a quoted string (e.g. "1.2.3")
+type SemVer struct {
+	Major int
+	Minor int
+	Patch int
+}
+
+// MarshalZON marshals SemVer as a quoted ZON string
+func (s SemVer) MarshalZON() ([]byte, error) {
+	str := fmt.Sprintf(`"%d.%d.%d"`, s.Major, s.Minor, s.Patch)
+	return []byte(str), nil
+}
+
+// UnmarshalZON parses a quoted ZON string back into a SemVer struct
+func (s *SemVer) UnmarshalZON(data []byte) error {
+	str := string(data)
+	// Trim ZON string quotes
+	str = strings.Trim(str, `"`)
+
+	parts := strings.Split(str, ".")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid SemVer format: %s", str)
+	}
+
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return err
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return err
+	}
+	patch, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return err
+	}
+
+	s.Major = major
+	s.Minor = minor
+	s.Patch = patch
+	return nil
+}
+
+type ProjectInfo struct {
+	Name    string `zon:"name"`
+	Version SemVer `zon:"version"`
+}
+
+func main() {
+	src := `.{ .name = "zed", .version = "1.2.3" }`
+	
+	var info ProjectInfo
+	if err := zon.Unmarshal([]byte(src), &info); err != nil {
+		panic(err)
+	}
+	fmt.Printf("Unmarshaled SemVer: %d.%d.%d\n", info.Version.Major, info.Version.Minor, info.Version.Patch)
+
+	out, err := zon.Marshal(info)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println("Marshaled:")
+	fmt.Println(string(out))
+}
+```
+
 ## Installing the CLI
 ```bash
 go install github.com/tristanisham/zon/cmd/zon@latest

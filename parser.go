@@ -20,12 +20,15 @@ func parse(src string) (node, error) {
 }
 
 type parser struct {
-	toks []token
-	pos  int
+	toks  []token
+	pos   int
+	depth int
 }
 
+// cur returns the current token.
 func (p *parser) cur() token { return p.toks[p.pos] }
 
+// at returns the token at the given offset from the current position, or EOF if out of bounds.
 func (p *parser) at(off int) token {
 	i := p.pos + off
 	if i >= len(p.toks) {
@@ -34,6 +37,7 @@ func (p *parser) at(off int) token {
 	return p.toks[i]
 }
 
+// advance returns the current token and moves the parser position forward.
 func (p *parser) advance() token {
 	t := p.toks[p.pos]
 	if p.pos < len(p.toks)-1 {
@@ -42,11 +46,21 @@ func (p *parser) advance() token {
 	return t
 }
 
+// errorf returns a SyntaxError at the specified token's location with a formatted message.
 func (p *parser) errorf(t token, format string, args ...any) error {
 	return &SyntaxError{msg: fmt.Sprintf(format, args...), Line: t.line, Col: t.col}
 }
 
+const maxParseDepth = 1000
+
+// parseValue parses any valid ZON value (aggregates, strings, numbers, booleans, enums, null).
 func (p *parser) parseValue() (node, error) {
+	p.depth++
+	if p.depth > maxParseDepth {
+		return nil, p.errorf(p.cur(), "exceeded maximum parsing depth of %d", maxParseDepth)
+	}
+	defer func() { p.depth-- }()
+
 	t := p.cur()
 	switch t.kind {
 	case tokenDotBrace:
@@ -92,6 +106,7 @@ func (p *parser) parseValue() (node, error) {
 	}
 }
 
+// parseNegative parses a negative number or a negative inf float value.
 func (p *parser) parseNegative() (node, error) {
 	p.advance() // -
 	t := p.cur()
@@ -128,6 +143,7 @@ func (p *parser) parseAggregate() (node, error) {
 	return p.parseTupleBody()
 }
 
+// parseStructBody parses the field sequence of a ZON struct inside braces.
 func (p *parser) parseStructBody() (node, error) {
 	var fields []field
 	for {
@@ -166,6 +182,7 @@ func (p *parser) parseStructBody() (node, error) {
 	}
 }
 
+// parseTupleBody parses the item sequence of a ZON tuple/array inside braces.
 func (p *parser) parseTupleBody() (node, error) {
 	var items []node
 	for {

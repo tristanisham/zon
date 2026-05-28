@@ -1,6 +1,9 @@
 package zon
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseStruct(t *testing.T) {
 	n, err := parse(`.{ .name = "demo", .count = 3 }`)
@@ -107,5 +110,23 @@ func TestParseErrors(t *testing.T) {
 		if _, err := parse(src); err == nil {
 			t.Errorf("parse(%q) succeeded, want error", src)
 		}
+	}
+}
+
+func TestParseMaxDepth(t *testing.T) {
+	// Generate a deeply nested structure, e.g., 1001 levels of ".{"
+	var sb strings.Builder
+	for range 1001 {
+		sb.WriteString(".{")
+	}
+	for range 1001 {
+		sb.WriteString("}")
+	}
+	_, err := parse(sb.String())
+	if err == nil {
+		t.Fatal("expected error for parsing deep aggregate structure, got none")
+	}
+	if !strings.Contains(err.Error(), "exceeded maximum parsing depth") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
