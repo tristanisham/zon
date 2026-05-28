@@ -1,5 +1,4 @@
 # Go
 *.test
 *.out
-test/data
 docs/
