@@ -340,6 +340,89 @@ func main() {
 }
 ```
 
+## The ZON grammar this parser accepts
+
+ZON has no written specification; its definition is Zig's own implementation (`std.zig.Ast` in ZON mode plus `std.zig.ZonGen`). This parser was built to accept exactly the documents Zig 0.17.0 accepts, and is tested against it (see [Spec conformance testing](#spec-conformance-testing)). The rules below are Zig's, restated.
+
+**Document.** One value, optionally surrounded by whitespace and comments. An empty document, or more than one value (`1 2`), is an error. A UTF-8 byte order mark at the very start is skipped. A NUL byte anywhere is an error.
+
+**Whitespace and comments.** Whitespace is space, tab, `\r` and `\n`. Comments are `//` to the end of the line; there are no block comments. Doc comments (`///` and `//!`) are tokens in Zig, and no ZON value can carry one, so they are always an error (`////` is an ordinary comment). Comment text may not contain control characters, **including tab**; a `\r` is allowed only immediately before `\n`. Comment text need not be valid UTF-8.
+
+**Values.**
+
+| Form | Examples | Rules |
+| --- | --- | --- |
+| Booleans, null | `true`, `false`, `null` | Must be written bare. `@"true"` is an identifier, not the boolean, and is an error as a value. |
+| Special floats | `inf`, `-inf`, `nan` | `-nan` and `+inf` are errors. `-` may be followed by whitespace or comments (`- inf`). |
+| Integers | `42`, `-7`, `0xff`, `0o17`, `0b1010`, `1_000` | Base prefixes are lowercase only (`0X1` is an error). No leading zeros in decimal (`012` is an error; use `0o12`). `_` separates digits: not repeated, not trailing, not right after a prefix (`1__0`, `1_`, `0x_1` are errors). `-0` is an error ("ambiguous"; write `0`, or `-0.0` for a signed zero). Any size is valid ZON. |
+| Floats | `1.5`, `1e10`, `2.5E-3`, `1.e5`, `0x1.8p3`, `0x1.8`, `0x.8p0` | Decimal or hex only (`0o1.0` is an error). A digit must follow `.` (`5.` and `.5` are errors), but an exponent may follow it directly (`1.e5`). A hex float may omit the `p` exponent. Values beyond the float range are not errors; they round to ±inf or to zero. |
+| Characters | `'a'`, `'\n'`, `'\x41'`, `'\u{1F600}'`, `'é'` | Exactly one escape or one UTF-8 encoded codepoint. Decodes to its integer codepoint. Cannot be negated (`-'a'` is an error). |
+| Strings | `"text"`, `"tab\there"`, `"\xff"` | Escapes: `\n \r \t \\ \" \'`, `\xNN` (a raw **byte**, so a string may hold invalid UTF-8) and `\u{N…}` (a codepoint, any number of hex digits, at most U+10FFFF, no surrogates). Other escapes (`\a`, `\0`, `\U…`) are errors. Raw control characters, including tab and DEL, must be escaped. Raw bytes ≥ 0x80 are kept as is and need not be valid UTF-8. |
+| Multiline strings | `\\first line` / `\\second line` | Each `\\` line runs to the end of the line, and consecutive lines are joined with `\n` (no trailing newline). Lines separated only by whitespace or comments, **including blank lines**, belong to the same string. A `\r\n` line ending is not part of the content. Tab and other control characters are errors. |
+| Enum literals | `.debug`, `.@"with space"` | See identifiers below. `.` and the name may be separated by whitespace. |
+| Structs | `.{ .name = "x", .n = 1, }` | Field names follow the identifier rules. Duplicate field names are an error, including `.a` and `.@"a"`. A trailing comma is allowed. |
+| Tuples | `.{ 1, "two", .three }`, `.{}` | A trailing comma is allowed; `.{,}` is not. `.{}` is an empty aggregate (decodes as an empty struct, map or slice). Struct fields and tuple items cannot be mixed. |
+
+`.` and `{` are separate tokens, so `. {}` and `.// c` + newline + `{}` are valid aggregates.
+
+**Identifiers** (field names and enum literals). A bare identifier is ASCII `[A-Za-z_][A-Za-z0-9_]*` and must not be one of Zig's keywords (`fn`, `const`, `error`, `struct`, `test`, `and`, …; the full list is in `lexer.go`). Anything else is written `@"…"` using string escapes, for example `.@"fn"` or `.@"build-dep"`. `@"…"` cannot be empty or contain a NUL byte. Names that are not keywords may be bare even if they look special: `.true`, `.null`, `.type`, `.u8`, `._`.
+
+**Not ZON.** Everything else Zig has: operators (`1 + 2`, `!true`, `~1`, `++`), parentheses, typed initializers (`Foo{…}`, `[2]u8{…}`), field access and indexing, builtins (`@as`), pointers, optionals syntax, `error.Foo`, blocks, control flow and declarations. All are errors.
+
+Syntax errors are returned as `*zon.SyntaxError` with 1-based `Line` and `Col`, e.g. `zon: keyword "fn" cannot be used as an identifier; write @"fn" (line 1, column 5)`.
+
+## How this library differs from Zig
+
+**Syntax: no known differences.** The library accepts and rejects the same documents as Zig 0.17.0 and reads the same values, with two exceptions caused by bugs in Zig itself:
+
+- Zig's f128 float parser drops a mantissa digit for some literals that have both digit separators and an exponent: Zig reads `9_703e283` as `9.7e286`. This library returns `9.703e286`, as Zig's own f64 parser and other correct parsers do.
+- A character literal holding a truncated UTF-8 sequence (a raw `0xC3` byte between quotes) crashes Zig's `std.zig.string_literal.parseCharLiteral`. This library rejects it.
+
+**Numeric precision.** Zig holds integer literals at arbitrary precision and float literals as f128, then converts them to the target type. This library converts each literal directly to the Go target type:
+
+- Integers wider than 64 bits parse, but decode only into `float32`/`float64` (rounded), or into `any` as a `float64`. Decoding them into an integer type is an overflow error. `math/big` types are not supported as targets.
+- A float literal decoded into a `float64` is rounded once, directly from its decimal or hex text. Zig rounds it to f128 first and then to f64, which in rare halfway cases can differ in the last bit. No such case turned up in testing.
+
+**Decoding is `encoding/json`-like, not `std.zon.parse`-like.** Zig's `std.zon.parse` decodes into a Zig type and is strict; `Unmarshal` follows Go conventions and is lenient in these places:
+
+| Situation | Zig `std.zon.parse` | `zon.Unmarshal` |
+| --- | --- | --- |
+| Unknown struct field | Error (unless `ignore_unknown_fields`) | Ignored |
+| Missing struct field without a default | Error | Go field left unchanged |
+| `null` into a non-optional | Error | Sets the zero value (`nil` for pointers, maps, slices, interfaces) |
+| Fixed-size array, wrong length | Error | Extra items are dropped; missing items leave the elements unchanged |
+| String into `[]const u8` / `[]byte` | Accepted | Error (a tuple of integers decodes into `[]byte`) |
+| String into an enum | Error | A string decodes into `zon.EnumLiteral` |
+| Enum literal into a string | Error | Accepted, gives the name (`.debug` → `"debug"`) |
+| Field name matching | Exact | Exact `zon` tag, else the exact Go field name (case-sensitive) |
+
+These match Zig: integer overflow and negative values into unsigned types are errors; integers and character literals decode into floats; a float decodes into an integer only if it is exactly integral (`1.0`, `1e3`, `0x1p4`; `1.5` and `inf` are errors); character literals decode into integers.
+
+Into `any`, values decode as: struct → `map[string]any`, tuple and `.{}` → `[]any`, string → `string`, enum literal → `zon.EnumLiteral`, integer → `int64` (or `uint64` above `math.MaxInt64`, or `float64` beyond that), float and `inf`/`nan` → `float64`, character → `int64` codepoint, `true`/`false` → `bool`, `null` → `nil`. Struct field order is lost in a map.
+
+**Encoding.** `Marshal` output is always valid ZON that Zig accepts and reads back as the same value:
+
+- Field names and enum literals are written bare when possible, otherwise as `@"…"`, which includes Zig keywords (`.@"fn"`). An empty name, a name containing NUL, or two Go fields tagged with the same name return an error, because ZON cannot represent them.
+- Strings use `\n`, `\r`, `\t`, `\"` and `\\`. Other control characters, DEL and bytes that are not valid UTF-8 are written as `\xNN`. Valid UTF-8 is written as is.
+- Floats use the shortest representation that round-trips and always contain `.`, `e` or `p` (`1.0`, `1e+21`, `-0.0`), so they read back as floats. NaN and infinities are `nan`, `inf`, `-inf`.
+- Map keys are sorted. Nil pointers and interfaces are `null`. Nil and empty slices and maps are `.{}`. `[]byte` is a tuple of integers.
+- Maps with non-string keys, channels, functions and complex numbers return `*zon.UnsupportedTypeError`.
+
+## Spec conformance testing
+
+The parser is tested against Zig's own ZON front end, not against a hand-written reading of the grammar:
+
+- `TestConformance` runs a corpus of 655 documents covering every literal form, token class and forbidden construct, and checks that the library accepts exactly what Zig accepts and decodes the same value. Zig's verdicts are stored in `testdata/conformance.golden`, so the test needs no Zig toolchain.
+- `TestDifferentialFuzz` and `TestDifferentialEncoder` generate documents (and marshal random Go values) and compare against Zig live. They need the oracle in `testdata/oracle/oracle.zig` (written for Zig 0.17.0):
+
+```bash
+zig build-exe -OReleaseSafe testdata/oracle/oracle.zig
+go test -run 'TestConformance|TestDifferential' -zon.oracle=./oracle -zon.diff.n=400000
+go test -run TestConformance -zon.oracle=./oracle -zon.update   # regenerate the golden file
+```
+
+In the last full run, about 2.6 million generated documents and 60,000 marshaled values produced no differences other than the two Zig bugs above.
+
 ## Installing the CLI
 ```bash
 go install github.com/tristanisham/zon/cmd/zon@latest

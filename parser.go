@@ -1,6 +1,9 @@
 package zon
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // parse lexes and parses a complete ZON document into an AST.
 func parse(src string) (node, error) {
@@ -74,6 +77,9 @@ func (p *parser) parseValue() (node, error) {
 	case tokenFloat:
 		p.advance()
 		return numberNode{raw: t.value, isFloat: true}, nil
+	case tokenChar:
+		p.advance()
+		return numberNode{raw: t.value}, nil
 	case tokenMinus:
 		return p.parseNegative()
 	case tokenDot:
@@ -87,6 +93,9 @@ func (p *parser) parseValue() (node, error) {
 		return enumNode{name: id.value}, nil
 	case tokenIdent:
 		p.advance()
+		if t.quoted {
+			return nil, p.errorf(t, "unexpected identifier @%q; precede it with '.' for an enum literal", t.value)
+		}
 		switch t.value {
 		case "true":
 			return boolNode{value: true}, nil
@@ -112,20 +121,31 @@ func (p *parser) parseNegative() (node, error) {
 	t := p.cur()
 	switch t.kind {
 	case tokenInt:
+		if isZeroInt(t.value) {
+			return nil, p.errorf(t, "integer literal '-0' is ambiguous; use '0' for an integer or '-0.0' for a float")
+		}
 		p.advance()
 		return numberNode{raw: "-" + t.value}, nil
 	case tokenFloat:
 		p.advance()
 		return numberNode{raw: "-" + t.value, isFloat: true}, nil
 	case tokenIdent:
-		if t.value == "inf" {
+		if t.value == "inf" && !t.quoted {
 			p.advance()
 			return numberNode{raw: "-inf", isFloat: true}, nil
 		}
-		return nil, p.errorf(t, "unexpected %q after -", t.value)
+		return nil, p.errorf(t, "expected number or 'inf' after '-'")
 	default:
-		return nil, p.errorf(t, "expected number after -")
+		return nil, p.errorf(t, "expected number or 'inf' after '-'")
 	}
+}
+
+// isZeroInt reports whether raw, a validated integer literal, has value zero.
+func isZeroInt(raw string) bool {
+	if len(raw) > 2 && raw[0] == '0' && (raw[1] == 'x' || raw[1] == 'o' || raw[1] == 'b') {
+		raw = raw[2:]
+	}
+	return strings.Trim(raw, "0_") == ""
 }
 
 // parseAggregate parses .{ ... }. It is a struct when the contents begin with a
@@ -146,6 +166,7 @@ func (p *parser) parseAggregate() (node, error) {
 // parseStructBody parses the field sequence of a ZON struct inside braces.
 func (p *parser) parseStructBody() (node, error) {
 	var fields []field
+	seen := map[string]bool{}
 	for {
 		if p.cur().kind != tokenDot {
 			return nil, p.errorf(p.cur(), "expected field name")
@@ -155,6 +176,10 @@ func (p *parser) parseStructBody() (node, error) {
 		if name.kind != tokenIdent {
 			return nil, p.errorf(name, "expected identifier for field name")
 		}
+		if seen[name.value] {
+			return nil, p.errorf(name, "duplicate struct field name %q", name.value)
+		}
+		seen[name.value] = true
 		p.advance()
 		if p.cur().kind != tokenEquals {
 			return nil, p.errorf(p.cur(), "expected = after field name")

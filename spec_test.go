@@ -111,3 +111,51 @@ func TestLeadingZeroIntegerRejected(t *testing.T) {
 		t.Fatalf("n = %d, want 0", n)
 	}
 }
+
+// std.zon.parse decodes a float literal into an integer type when its value is
+// exactly integral (intFromFloatExact), and rejects it otherwise.
+func TestSpecIntegralFloatIntoInt(t *testing.T) {
+	for _, tc := range []struct {
+		src  string
+		want int64
+	}{
+		{"1.0", 1}, {"-2.0", -2}, {"1e3", 1000}, {"0x1p4", 16}, {"0x1.8p1", 3},
+		{"1_000.0", 1000}, {"-0.0", 0}, {"9007199254740993.0", 9007199254740993},
+		{"9223372036854775807.0", math.MaxInt64},
+	} {
+		var i int64
+		if err := Unmarshal([]byte(tc.src), &i); err != nil {
+			t.Errorf("Unmarshal(%q, *int64): %v", tc.src, err)
+		} else if i != tc.want {
+			t.Errorf("Unmarshal(%q, *int64) = %d, want %d", tc.src, i, tc.want)
+		}
+	}
+	var u uint64
+	if err := Unmarshal([]byte("18446744073709551615.0"), &u); err != nil || u != math.MaxUint64 {
+		t.Errorf("Unmarshal(18446744073709551615.0, *uint64) = %d, %v", u, err)
+	}
+	for _, src := range []string{"1.5", "1e-1", "inf", "nan", "-1.0", "256.0", "9223372036854775808.0"} {
+		var i8 int8
+		var u8 uint8
+		var i64 int64
+		errI8, errU8, errI64 := Unmarshal([]byte(src), &i8), Unmarshal([]byte(src), &u8), Unmarshal([]byte(src), &i64)
+		switch src {
+		case "-1.0":
+			if errI8 != nil || errU8 == nil {
+				t.Errorf("%q: int8 err %v (want nil), uint8 err %v (want error)", src, errI8, errU8)
+			}
+		case "256.0":
+			if errI8 == nil || errU8 == nil || errI64 != nil {
+				t.Errorf("%q: int8 %v, uint8 %v (want errors), int64 %v (want nil)", src, errI8, errU8, errI64)
+			}
+		case "9223372036854775808.0":
+			if errI64 == nil {
+				t.Errorf("%q into int64: want overflow error", src)
+			}
+		default:
+			if errI8 == nil || errU8 == nil || errI64 == nil {
+				t.Errorf("%q: want errors for every integer type, got %v %v %v", src, errI8, errU8, errI64)
+			}
+		}
+	}
+}

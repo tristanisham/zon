@@ -2,8 +2,10 @@ package zon
 
 import (
 	"bytes"
+	"math/big"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 // Unmarshal parses the ZON-encoded data and stores the result in the value
@@ -13,7 +15,9 @@ import (
 // (.{ .a = 1 }) into Go structs (by `zon` tag or field name) or maps with
 // string keys; tuples (.{ 1, 2 }) into slices or arrays; strings, numbers,
 // bools, and null into the corresponding kinds. Enum literals (.debug) decode
-// into an EnumLiteral or a string. Unknown struct fields are ignored. Into an
+// into an EnumLiteral or a string. As in Zig's std.zon, a float literal
+// decodes into an integer type only if its value is exactly integral (1.0,
+// 1e3). Unknown struct fields are ignored. Into an
 // any, ZON decodes to map[string]any, []any, string, int64/uint64/float64,
 // bool, EnumLiteral, or nil.
 func Unmarshal(data []byte, v any) error {
@@ -155,14 +159,26 @@ func decodeEnum(nd enumNode, rv reflect.Value) error {
 func decodeNumber(nd numberNode, rv reflect.Value) error {
 	switch rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		i, err := parseInt(nd.raw)
+		var i int64
+		var err error
+		if nd.isFloat {
+			i, err = floatToInt(nd.raw)
+		} else {
+			i, err = parseInt(nd.raw)
+		}
 		if err != nil || rv.OverflowInt(i) {
 			return numErr(nd, rv)
 		}
 		rv.SetInt(i)
 		return nil
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		u, err := parseUint(nd.raw)
+		var u uint64
+		var err error
+		if nd.isFloat {
+			u, err = floatToUint(nd.raw)
+		} else {
+			u, err = parseUint(nd.raw)
+		}
 		if err != nil || rv.OverflowUint(u) {
 			return numErr(nd, rv)
 		}
@@ -314,15 +330,82 @@ func decodeTuple(nd tupleNode, rv reflect.Value) error {
 	return &UnmarshalTypeError{Value: "array", Type: rv.Type()}
 }
 
+// Number literals reach these helpers already validated against Zig's rules by
+// the lexer, so digit separators can simply be dropped: Go's own separator
+// rules differ from Zig's (Go accepts 0x_1, Zig does not) and must not decide.
+
 // parseInt parses a raw numeric literal string as an int64.
-func parseInt(raw string) (int64, error) { return strconv.ParseInt(raw, 0, 64) }
+func parseInt(raw string) (int64, error) {
+	return strconv.ParseInt(strings.ReplaceAll(raw, "_", ""), 0, 64)
+}
 
 // parseUint parses a raw numeric literal string as a uint64.
-func parseUint(raw string) (uint64, error) { return strconv.ParseUint(raw, 0, 64) }
+func parseUint(raw string) (uint64, error) {
+	return strconv.ParseUint(strings.ReplaceAll(raw, "_", ""), 0, 64)
+}
 
-// parseFloat parses a raw numeric literal string as a float64.
+// parseFloat parses a raw numeric literal string as a float64. Zig allows a
+// hex float without a binary exponent (0x1.8), which Go requires, so p0 is
+// supplied. A literal beyond the float64 range is not an error in Zig: like a
+// float literal coerced to f64 there, it rounds to ±Inf (or to zero).
 func parseFloat(raw string) (float64, error) {
-	return strconv.ParseFloat(raw, 64)
+	f, err := strconv.ParseFloat(goFloatSyntax(raw), 64)
+	if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
+		return f, nil
+	}
+	return f, err
+}
+
+// goFloatSyntax rewrites a validated Zig float literal into Go's float syntax.
+func goFloatSyntax(raw string) string {
+	s := strings.ReplaceAll(raw, "_", "")
+	if u := strings.TrimPrefix(s, "-"); strings.HasPrefix(u, "0x") && !strings.ContainsAny(u, "pP") {
+		s += "p0"
+	}
+	return s
+}
+
+// f128Prec is the significand precision of Zig's f128, in which ZON float
+// literals are held before being converted to a target type.
+const f128Prec = 113
+
+// exactFloat returns the float literal raw rounded to f128 precision, or an
+// error if it is not finite or not an integer. Zig's std.zon.parse decodes a
+// float literal into an integer type only when it is exactly integral.
+func exactFloat(raw string) (*big.Int, error) {
+	f, _, err := big.ParseFloat(goFloatSyntax(raw), 0, f128Prec, big.ToNearestEven)
+	if err != nil {
+		return nil, err
+	}
+	if f.IsInf() || !f.IsInt() {
+		return nil, strconv.ErrSyntax
+	}
+	i, _ := f.Int(nil)
+	return i, nil
+}
+
+// floatToInt converts an integral float literal to an int64.
+func floatToInt(raw string) (int64, error) {
+	i, err := exactFloat(raw)
+	if err != nil {
+		return 0, err
+	}
+	if !i.IsInt64() {
+		return 0, strconv.ErrRange
+	}
+	return i.Int64(), nil
+}
+
+// floatToUint converts an integral float literal to a uint64.
+func floatToUint(raw string) (uint64, error) {
+	i, err := exactFloat(raw)
+	if err != nil {
+		return 0, err
+	}
+	if !i.IsUint64() {
+		return 0, strconv.ErrRange
+	}
+	return i.Uint64(), nil
 }
 
 // renderNode serializes a parsed node back to compact ZON. It is used to feed

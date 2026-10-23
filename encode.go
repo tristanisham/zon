@@ -92,6 +92,9 @@ func (e *encodeState) encode(rv reflect.Value) error {
 		return nil
 	case reflect.String:
 		if rv.Type() == enumLiteralType {
+			if err := checkName(rv.String()); err != nil {
+				return err
+			}
 			e.buf.WriteByte('.')
 			writeFieldName(&e.buf, rv.String())
 			return nil
@@ -170,7 +173,14 @@ func (e *encodeState) encodeStruct(rv reflect.Value) error {
 		val  reflect.Value
 	}
 	var out []entry
+	seen := make(map[string]bool, len(info.ordered))
 	for _, f := range info.ordered {
+		// ZON rejects a struct with a repeated field name, so two Go fields
+		// tagged with the same name cannot be encoded.
+		if seen[f.name] {
+			return fmt.Errorf("zon: struct %v has more than one field named %q", rv.Type(), f.name)
+		}
+		seen[f.name] = true
 		fv := rv.Field(f.index)
 		if f.omitEmpty && isEmptyValue(fv) {
 			continue
@@ -185,7 +195,9 @@ func (e *encodeState) encodeStruct(rv reflect.Value) error {
 	e.depth++
 	for i, p := range out {
 		e.writeIndent()
-		e.writeKey(p.name)
+		if err := e.writeKey(p.name); err != nil {
+			return err
+		}
 		if err := e.encode(p.val); err != nil {
 			return err
 		}
@@ -212,7 +224,9 @@ func (e *encodeState) encodeMap(rv reflect.Value) error {
 	e.depth++
 	for i, k := range keys {
 		e.writeIndent()
-		e.writeKey(k.String())
+		if err := e.writeKey(k.String()); err != nil {
+			return err
+		}
 		if err := e.encode(rv.MapIndex(k)); err != nil {
 			return err
 		}
@@ -225,7 +239,10 @@ func (e *encodeState) encodeMap(rv reflect.Value) error {
 }
 
 // writeKey writes a struct/map field key (".name =" or ".name=" when compact).
-func (e *encodeState) writeKey(name string) {
+func (e *encodeState) writeKey(name string) error {
+	if err := checkName(name); err != nil {
+		return err
+	}
 	e.buf.WriteByte('.')
 	writeFieldName(&e.buf, name)
 	if e.indent == "" {
@@ -233,6 +250,20 @@ func (e *encodeState) writeKey(name string) {
 	} else {
 		e.buf.WriteString(" = ")
 	}
+	return nil
+}
+
+// checkName reports an error if name cannot be a ZON field name or enum
+// literal: Zig rejects empty identifiers and identifiers containing NUL, even
+// in @"..." form.
+func checkName(name string) error {
+	if name == "" {
+		return fmt.Errorf("zon: cannot encode an empty field name or enum literal")
+	}
+	if strings.IndexByte(name, 0) >= 0 {
+		return fmt.Errorf("zon: cannot encode field name or enum literal %q: it contains a NUL byte", name)
+	}
+	return nil
 }
 
 // writeIndent writes a newline and the appropriate level of indentation to the buffer.
@@ -272,6 +303,8 @@ func marshalerFor(rv reflect.Value) (Marshaler, bool) {
 }
 
 // writeZonString writes s as a double-quoted ZON string literal with escaping.
+// Control characters, which Zig does not allow raw in a string literal, are
+// escaped (including DEL, 0x7f).
 // It iterates byte-wise so that bytes which are not part of a valid UTF-8
 // sequence are emitted as \xNN raw-byte escapes (the decoder reads \xNN back as
 // the same byte), keeping the encoding lossless for arbitrary byte content.
@@ -300,7 +333,7 @@ func writeZonString(b *bytes.Buffer, s string) {
 			i++
 			continue
 		}
-		if c := s[i]; c < 0x20 {
+		if c := s[i]; c < 0x20 || c == 0x7f {
 			fmt.Fprintf(b, `\x%02x`, c)
 			i++
 			continue
@@ -322,9 +355,9 @@ func writeZonString(b *bytes.Buffer, s string) {
 }
 
 // writeFieldName writes a field name as a bare identifier when possible, or as
-// an @"..." quoted identifier otherwise.
+// an @"..." quoted identifier otherwise (including for Zig keywords).
 func writeFieldName(b *bytes.Buffer, name string) {
-	if isValidIdent(name) {
+	if isValidIdent(name) && !isKeyword(name) {
 		b.WriteString(name)
 		return
 	}

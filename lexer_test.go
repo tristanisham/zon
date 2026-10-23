@@ -96,8 +96,10 @@ func TestLexCharLiteral(t *testing.T) {
 		if err != nil {
 			t.Fatalf("lex(%q): %v", tc.src, err)
 		}
-		if toks[0].kind != tokenInt || toks[0].value != tc.want {
-			t.Errorf("lex(%q) = {%v %q}, want int %q", tc.src, toks[0].kind, toks[0].value, tc.want)
+		// A distinct kind from tokenInt: unlike a number, a char literal
+		// cannot be negated (-'a' is not ZON).
+		if toks[0].kind != tokenChar || toks[0].value != tc.want {
+			t.Errorf("lex(%q) = {%v %q}, want char %q", tc.src, toks[0].kind, toks[0].value, tc.want)
 		}
 	}
 }
