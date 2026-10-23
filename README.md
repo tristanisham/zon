@@ -340,6 +340,21 @@ func main() {
 }
 ```
 
+## Spec conformance
+
+The parser is tested against Zig's own ZON front end (`std.zig.Ast` in ZON mode plus `std.zig.ZonGen`), not against a hand-written reading of the grammar:
+
+- `TestConformance` runs a corpus of 655 documents covering every literal form, token class and forbidden construct, and checks that the library accepts exactly what Zig accepts and decodes the same value. Zig's verdicts are stored in `testdata/conformance.golden`, so the test needs no Zig toolchain.
+- `TestDifferentialFuzz` and `TestDifferentialEncoder` generate documents (and marshal random Go values) and compare against Zig live. They need the oracle in `testdata/oracle/oracle.zig` (written for Zig 0.17.0):
+
+```bash
+zig build-exe -OReleaseSafe testdata/oracle/oracle.zig
+go test -run 'TestConformance|TestDifferential' -zon.oracle=./oracle -zon.diff.n=400000
+go test -run TestConformance -zon.oracle=./oracle -zon.update   # regenerate the golden file
+```
+
+Two known differences come from bugs in Zig 0.17.0 itself: its f128 float parser drops a mantissa digit for some literals with digit separators and an exponent (`9_703e283` reads as `9.7e286`; this library returns `9.703e286`, as Zig's own f64 parser does), and a character literal holding a truncated UTF-8 sequence (`'\xc3'` with a raw byte) panics in `std.zig.string_literal.parseCharLiteral` (this library rejects it). Integers wider than 64 bits are valid ZON and parse, but decode only into float types (or `any`, as a float64).
+
 ## Installing the CLI
 ```bash
 go install github.com/tristanisham/zon/cmd/zon@latest

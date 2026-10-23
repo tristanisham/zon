@@ -12,7 +12,8 @@
 //   - an enum literal, .debug
 //   - true, false, or null
 //
-// Line comments (// ...) are permitted and ignored when decoding.
+// Line comments (// ...) are permitted and ignored when decoding. Doc comments
+// (/// and //!) are not, as in Zig's own ZON parser.
 //
 // The API mirrors encoding/json: use Marshal and Unmarshal for whole values, or
 // Encoder and Decoder for streams. Struct fields are mapped using `zon` tags
