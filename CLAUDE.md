@@ -123,6 +123,10 @@ Each agent: package `zon` (white-box, may hit internal lex/parse), unique symbol
 
 ## Notes log
 
+- 2026-10-23: README now documents the accepted grammar, the differences from Zig (Zig bugs,
+  numeric precision, json-like decode vs `std.zon.parse`) and encoder output. Every claim was
+  checked against `conformance.golden` or a probe run; keep it in sync when behavior changes.
+
 - 2026-10-23: Built a Zig 0.17.0 oracle and differential harness. Earlier "validated"
   assumptions came from the spec thread/ANTLR grammar and missed ~20 divergences (see the
   conformance section). Lesson: validate against the reference implementation, not prose.
