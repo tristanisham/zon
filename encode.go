@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"math/big"
 	"reflect"
 	"sort"
 	"strconv"
@@ -63,6 +64,11 @@ func (e *encodeState) encode(rv reflect.Value) error {
 	defer func() { e.recursionDepth-- }()
 
 	if rv.IsValid() {
+		if rv.Type() == bigIntType {
+			n := rv.Interface().(big.Int)
+			e.buf.WriteString(n.String())
+			return nil
+		}
 		if m, ok := marshalerFor(rv); ok {
 			raw, err := m.MarshalZON()
 			if err != nil {
@@ -92,6 +98,9 @@ func (e *encodeState) encode(rv reflect.Value) error {
 		return nil
 	case reflect.String:
 		if rv.Type() == enumLiteralType {
+			if err := checkIdentifier(rv.String()); err != nil {
+				return err
+			}
 			e.buf.WriteByte('.')
 			writeFieldName(&e.buf, rv.String())
 			return nil
@@ -170,11 +179,16 @@ func (e *encodeState) encodeStruct(rv reflect.Value) error {
 		val  reflect.Value
 	}
 	var out []entry
+	seen := make(map[string]bool)
 	for _, f := range info.ordered {
 		fv := rv.Field(f.index)
 		if f.omitEmpty && isEmptyValue(fv) {
 			continue
 		}
+		if seen[f.name] {
+			return fmt.Errorf("zon: duplicate struct field %q", f.name)
+		}
+		seen[f.name] = true
 		out = append(out, entry{f.name, fv})
 	}
 	if len(out) == 0 {
@@ -185,7 +199,9 @@ func (e *encodeState) encodeStruct(rv reflect.Value) error {
 	e.depth++
 	for i, p := range out {
 		e.writeIndent()
-		e.writeKey(p.name)
+		if err := e.writeKey(p.name); err != nil {
+			return err
+		}
 		if err := e.encode(p.val); err != nil {
 			return err
 		}
@@ -212,7 +228,9 @@ func (e *encodeState) encodeMap(rv reflect.Value) error {
 	e.depth++
 	for i, k := range keys {
 		e.writeIndent()
-		e.writeKey(k.String())
+		if err := e.writeKey(k.String()); err != nil {
+			return err
+		}
 		if err := e.encode(rv.MapIndex(k)); err != nil {
 			return err
 		}
@@ -225,7 +243,10 @@ func (e *encodeState) encodeMap(rv reflect.Value) error {
 }
 
 // writeKey writes a struct/map field key (".name =" or ".name=" when compact).
-func (e *encodeState) writeKey(name string) {
+func (e *encodeState) writeKey(name string) error {
+	if err := checkIdentifier(name); err != nil {
+		return err
+	}
 	e.buf.WriteByte('.')
 	writeFieldName(&e.buf, name)
 	if e.indent == "" {
@@ -233,6 +254,7 @@ func (e *encodeState) writeKey(name string) {
 	} else {
 		e.buf.WriteString(" = ")
 	}
+	return nil
 }
 
 // writeIndent writes a newline and the appropriate level of indentation to the buffer.
@@ -300,7 +322,7 @@ func writeZonString(b *bytes.Buffer, s string) {
 			i++
 			continue
 		}
-		if c := s[i]; c < 0x20 {
+		if c := s[i]; c < 0x20 || c == 0x7f {
 			fmt.Fprintf(b, `\x%02x`, c)
 			i++
 			continue
@@ -334,7 +356,7 @@ func writeFieldName(b *bytes.Buffer, name string) {
 
 // isValidIdent reports whether the given string is a valid bare ZON identifier (no @"..." quote needed).
 func isValidIdent(s string) bool {
-	if s == "" {
+	if s == "" || isKeyword(s) {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
@@ -365,4 +387,11 @@ func isEmptyValue(v reflect.Value) bool {
 		return v.IsNil()
 	}
 	return false
+}
+
+func checkIdentifier(name string) error {
+	if name == "" || strings.ContainsRune(name, 0) {
+		return fmt.Errorf("zon: identifier must be nonempty and cannot contain null bytes")
+	}
+	return nil
 }

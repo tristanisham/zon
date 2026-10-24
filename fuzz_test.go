@@ -10,7 +10,7 @@ import (
 
 // fuzzUnmarshalSeeds are valid and adversarial ZON inputs used to seed the
 // Unmarshal/Lex/Parse fuzz corpora.
-var fuzzUnmarshalSeeds = []string{
+var fuzzUnmarshalSeeds = append(conformanceSeedInputs(), []string{
 	// scalars
 	"true",
 	"false",
@@ -70,6 +70,14 @@ var fuzzUnmarshalSeeds = []string{
 	".{,}",
 	"--5",
 	"1.2.3",
+}...)
+
+func conformanceSeedInputs() []string {
+	seeds := make([]string, 0, len(conformanceCases))
+	for _, tc := range conformanceCases {
+		seeds = append(seeds, tc.source)
+	}
+	return seeds
 }
 
 // FuzzUnmarshalNoPanic feeds arbitrary bytes into Unmarshal against several

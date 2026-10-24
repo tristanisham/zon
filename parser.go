@@ -1,6 +1,9 @@
 package zon
 
-import "fmt"
+import (
+	"fmt"
+	"math/big"
+)
 
 // parse lexes and parses a complete ZON document into an AST.
 func parse(src string) (node, error) {
@@ -68,7 +71,7 @@ func (p *parser) parseValue() (node, error) {
 	case tokenString:
 		p.advance()
 		return stringNode{value: t.value}, nil
-	case tokenInt:
+	case tokenInt, tokenChar:
 		p.advance()
 		return numberNode{raw: t.value}, nil
 	case tokenFloat:
@@ -77,10 +80,14 @@ func (p *parser) parseValue() (node, error) {
 	case tokenMinus:
 		return p.parseNegative()
 	case tokenDot:
+		if p.at(1).kind == tokenLBrace {
+			p.advance()
+			return p.parseAggregate()
+		}
 		// Enum literal: . identifier
 		p.advance()
 		id := p.cur()
-		if id.kind != tokenIdent {
+		if !identifierToken(id) {
 			return nil, p.errorf(id, "expected identifier after .")
 		}
 		p.advance()
@@ -112,6 +119,10 @@ func (p *parser) parseNegative() (node, error) {
 	t := p.cur()
 	switch t.kind {
 	case tokenInt:
+		value, _ := new(big.Int).SetString(t.value, 0)
+		if value.Sign() == 0 {
+			return nil, p.errorf(t, "negative integer zero is ambiguous; use 0 or -0.0")
+		}
 		p.advance()
 		return numberNode{raw: "-" + t.value}, nil
 	case tokenFloat:
@@ -137,7 +148,7 @@ func (p *parser) parseAggregate() (node, error) {
 		p.advance()
 		return tupleNode{}, nil
 	}
-	if p.cur().kind == tokenDot && p.at(1).kind == tokenIdent && p.at(2).kind == tokenEquals {
+	if p.cur().kind == tokenDot && identifierToken(p.at(1)) && p.at(2).kind == tokenEquals {
 		return p.parseStructBody()
 	}
 	return p.parseTupleBody()
@@ -146,15 +157,20 @@ func (p *parser) parseAggregate() (node, error) {
 // parseStructBody parses the field sequence of a ZON struct inside braces.
 func (p *parser) parseStructBody() (node, error) {
 	var fields []field
+	seen := make(map[string]bool)
 	for {
 		if p.cur().kind != tokenDot {
 			return nil, p.errorf(p.cur(), "expected field name")
 		}
 		p.advance()
 		name := p.cur()
-		if name.kind != tokenIdent {
+		if !identifierToken(name) {
 			return nil, p.errorf(name, "expected identifier for field name")
 		}
+		if seen[name.value] {
+			return nil, p.errorf(name, "duplicate struct field %q", name.value)
+		}
+		seen[name.value] = true
 		p.advance()
 		if p.cur().kind != tokenEquals {
 			return nil, p.errorf(p.cur(), "expected = after field name")
@@ -206,4 +222,9 @@ func (p *parser) parseTupleBody() (node, error) {
 			return nil, p.errorf(p.cur(), "expected , or }")
 		}
 	}
+}
+
+// identifierToken distinguishes quoted identifiers from keywords and value literals.
+func identifierToken(t token) bool {
+	return t.kind == tokenQuotedIdent || t.kind == tokenIdent && !isKeyword(t.value)
 }

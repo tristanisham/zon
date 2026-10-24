@@ -96,8 +96,8 @@ func TestLexCharLiteral(t *testing.T) {
 		if err != nil {
 			t.Fatalf("lex(%q): %v", tc.src, err)
 		}
-		if toks[0].kind != tokenInt || toks[0].value != tc.want {
-			t.Errorf("lex(%q) = {%v %q}, want int %q", tc.src, toks[0].kind, toks[0].value, tc.want)
+		if toks[0].kind != tokenChar || toks[0].value != tc.want {
+			t.Errorf("lex(%q) = {%v %q}, want char %q", tc.src, toks[0].kind, toks[0].value, tc.want)
 		}
 	}
 }
@@ -120,7 +120,7 @@ func TestLexQuotedIdent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lex: %v", err)
 	}
-	if toks[0].kind != tokenIdent || toks[0].value != "weird name" {
+	if toks[0].kind != tokenQuotedIdent || toks[0].value != "weird name" {
 		t.Errorf("quoted ident = {%v %q}", toks[0].kind, toks[0].value)
 	}
 }

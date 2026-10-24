@@ -2,8 +2,11 @@ package zon
 
 import (
 	"bytes"
+	"errors"
+	"math/big"
 	"reflect"
 	"strconv"
+	"strings"
 )
 
 // Unmarshal parses the ZON-encoded data and stores the result in the value
@@ -14,7 +17,7 @@ import (
 // string keys; tuples (.{ 1, 2 }) into slices or arrays; strings, numbers,
 // bools, and null into the corresponding kinds. Enum literals (.debug) decode
 // into an EnumLiteral or a string. Unknown struct fields are ignored. Into an
-// any, ZON decodes to map[string]any, []any, string, int64/uint64/float64,
+// any, ZON decodes to map[string]any, []any, string, int64/uint64/*big.Int/float64,
 // bool, EnumLiteral, or nil.
 func Unmarshal(data []byte, v any) error {
 	root, err := parse(string(data))
@@ -152,7 +155,17 @@ func decodeEnum(nd enumNode, rv reflect.Value) error {
 }
 
 // decodeNumber decodes a number AST node into the target Go numeric type.
+var bigIntType = reflect.TypeFor[big.Int]()
+
 func decodeNumber(nd numberNode, rv reflect.Value) error {
+	if rv.Type() == bigIntType && !nd.isFloat {
+		n, ok := new(big.Int).SetString(nd.raw, 0)
+		if !ok {
+			return numErr(nd, rv)
+		}
+		rv.Set(reflect.ValueOf(*n))
+		return nil
+	}
 	switch rv.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		i, err := parseInt(nd.raw)
@@ -201,8 +214,8 @@ func decodeNumberToAny(nd numberNode, rv reflect.Value) error {
 		rv.Set(reflect.ValueOf(u))
 		return nil
 	}
-	if f, err := parseFloat(nd.raw); err == nil {
-		rv.Set(reflect.ValueOf(f))
+	if n, ok := new(big.Int).SetString(nd.raw, 0); ok {
+		rv.Set(reflect.ValueOf(n))
 		return nil
 	}
 	return numErr(nd, rv)
@@ -322,7 +335,21 @@ func parseUint(raw string) (uint64, error) { return strconv.ParseUint(raw, 0, 64
 
 // parseFloat parses a raw numeric literal string as a float64.
 func parseFloat(raw string) (float64, error) {
-	return strconv.ParseFloat(raw, 64)
+	if !strings.ContainsAny(raw, ".pP") && !strings.EqualFold(raw, "inf") && raw != "-inf" && raw != "nan" {
+		if n, ok := new(big.Int).SetString(raw, 0); ok {
+			f, _ := n.Float64()
+			return f, nil
+		}
+	}
+	if strings.HasPrefix(strings.TrimPrefix(raw, "-"), "0x") && !strings.ContainsAny(raw, "pP") {
+		raw += "p0"
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	// As in Zig, finite literals outside float64 range narrow to infinity.
+	if errors.Is(err, strconv.ErrRange) {
+		return f, nil
+	}
+	return f, err
 }
 
 // renderNode serializes a parsed node back to compact ZON. It is used to feed

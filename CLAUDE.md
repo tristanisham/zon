@@ -1,98 +1,37 @@
-# CLAUDE.md — zon
+# Working notes — zon
 
-Working notes for the `github.com/tristanisham/zon` library and `cmd/zon` CLI.
+`github.com/tristanisham/zon` provides a Go library and a jq-style CLI in
+`cmd/zon`. The core package uses only the standard library. The CLI uses ZVM's
+`github.com/urfave/cli/v3` version; use the same ZVM libraries for shared needs.
+The accepted CLI interface is documented in README.md.
 
-## Working agreements (from the user)
+## Working agreements
 
-- **Challenge all assumptions.** Do not trust that the current implementation matches
-  the real ZON spec — verify against Zig's `std.zon` grammar and prove behavior with tests.
-- **TDD to validate the library.** Write a failing test that pins the intended behavior,
-  watch it fail, then make it pass. Especially for the "assumptions to validate" below.
-- **Keep this checklist current.** Update statuses and the dated notes log as work lands.
+- Verify syntax against Zig's actual front end; do not infer it from Go syntax
+  or assume earlier compliance claims are complete.
+- Pin library corrections with failing-first regression tests.
+- Keep the conformance report, CLI help, README, and manpage current when
+  behavior changes. Preserve other local work.
 
-## Checklist
+## Current validation
 
-### Library (implemented)
-- [x] lexer / parser / AST
-- [x] decode (reflection) + struct tags
-- [x] encode (pretty + compact) + Marshaler/Unmarshaler + EnumLiteral
-- [x] streaming Encoder/Decoder
-- [x] initial unit + round-trip tests (82.3% coverage at last run)
+- [x] Lexer, parser, reflection codecs, tags, and streaming API.
+- [x] Unit tests, round trips, benchmarks, and fuzz targets.
+- [x] Revalidated recorded conformance results against Zig 0.17.0.
+- [x] Added regression tests for additional syntax and encoder defects.
+- [x] Implemented the approved CLI: jq filters; ZON/JSON input;
+  ZON/JSON/YAML/TOML and raw string output.
+- [x] Removed obsolete `.delta` workspace metadata.
 
-### TDD correctness validation (challenge assumptions) — DONE
-- [x] Verify the real ZON grammar against Zig `std.zon` (web/spec check)
-- [x] One failing-first test per validated/refuted assumption (see `spec_test.go`)
-- [x] Fix library where behavior diverges from the spec
-- Result: only one real bug — leading-zero decimals were accepted as octal.
-  Fixed in `lexer.go` (rejected at lex time). inf/nan, char literals, `//`-only
-  comments, hex/oct/bin leading-zero digits, enum round-trip all confirmed correct.
+Use `go test ./...`, `go test -race ./...`, and `go vet ./...`.
+See CONFORMANCE.md for the optional live Zig oracle and precise compatibility
+boundaries. Build with `go build -o build/zon ./cmd/zon`.
 
-### Benchmarks for the full ZON spec — DONE (10-way partition)
-- [x] Isolation strategy: git init + per-agent worktrees (decided with user)
-- [x] 10 `bench_*_test.go` files, one per partition, unique symbol prefix each
-- [x] Integrate + run `go test -bench=. -benchmem` clean (all targets pass, vet/gofmt clean)
-- Note: written inline (not via parallel agents); `b.Loop()` + `b.ReportAllocs()`.
+## Notes
 
-### Fuzzing — DONE
-- [x] `fuzz_test.go`: FuzzUnmarshalNoPanic, FuzzLexNoPanic, FuzzParseNoPanic,
-  FuzzMarshalUnmarshalRoundTrip (~45 shared seeds). No panics in ~1.7M/1.5M execs.
-- [x] **Non-UTF-8 encoder lossiness bug — FIXED.** Was: lexer copies raw bytes into
-  string/`@"..."`/multiline literals, but `writeZonString` ranged over runes and
-  emitted U+FFFD for invalid bytes, so `\\<0xFF>` round-tripped to `"�"`. Root cause
-  was deeper than the encoder: `\xNN` in a string decoded via `WriteRune` to a
-  *codepoint* (`"\xff"`→U+00FF), so no escape could reproduce a raw byte. Fix (both
-  sides, matching Zig byte-escape semantics):
-  - `lexer.go` `scanStringBody`: `\xNN` in a string now writes a raw byte
-    (char literals keep codepoint semantics via `scanEscape`).
-  - `encode.go` `writeZonString`: iterates byte-wise, emits `\xNN` for any byte not
-    part of a valid UTF-8 sequence (and for control bytes < 0x20).
-  - Pinned by `TestNonUTF8StringRoundTrips` + `TestStringHexEscapeIsRawByte`; round-trip
-    fuzzer no longer skips non-UTF-8 inputs. Regression seeds remain under
-    `testdata/fuzz/FuzzMarshalUnmarshalRoundTrip/`.
-  - ⚠️ Behavior change: `"\xNN"` in a string now decodes to a single raw byte instead
-    of codepoint U+00NN. Spec-correct (Zig), but a breaking change for any caller that
-    relied on the old `\x`→codepoint decoding.
-
-### CLI `cmd/zon` (jq-for-zon) — DESIGN PARKED, awaiting approval
-- [ ] Approve design (gojq-backed, ZON/JSON in; ZON/JSON/YAML/TOML/raw out)
-- [ ] Implement after library is validated
-
-## Assumptions — VALIDATED against the ZON spec (Ziggit spec thread + ANTLR grammar)
-
-1. ✅ **`inf` / `nan` are valid ZON floats.** WRONG to suspect — they are the one thing
-   ZON adds on top of Zig's literal subset. Support kept; covered by `TestSpecInfNanRoundTrip`.
-2. ❌→FIXED **Leading-zero decimal.** Was accepted as octal (`0123`→83). Zig/ZON forbids it.
-   Now rejected in the lexer. Covered by `TestLeadingZeroIntegerRejected`. Leading-zero
-   digits inside hex/oct/bin remain valid (`TestSpecLeadingZeroDigitsInOtherBases`).
-3. ✅ **`//` line comments only.** Confirmed (ANTLR grammar: `LineComment '//' ~[\r\n]*`);
-   Zig has no block comments.
-4. ✅ **Multiline string** joins `\\` lines with `\n`, no trailing newline, blank line ends it.
-5. ✅ **Char literal `'a'`** is a valid value, decodes to its integer codepoint
-   (`TestSpecCharLiteralValue`).
-6. ✅ **`-` is only a numeric sign** (ZON has no operators).
-7. ✅ **Empty `.{}`** decodes into struct/map/slice.
-8. ✅ **Top-level value may be any ZON value**, not only a struct.
-9. ✅ **Hex floats, underscores, `0o`/`0b`** in-spec.
-10. ✅ **Encoder emits floats with `.0`** so they re-parse as floats.
-
-## Benchmark partition (10 agents, one file each, prefix `Benchmark<Area>_…`)
-
-1. `bench_scalars_test.go` — bool, null
-2. `bench_integers_test.go` — decimal/hex/oct/bin/underscores (lex+parse+decode+encode)
-3. `bench_floats_test.go` — decimal/scientific/hex floats (+ special values if valid)
-4. `bench_strings_test.go` — quoted strings, escapes, unicode
-5. `bench_multiline_chars_test.go` — multiline strings + char literals
-6. `bench_enums_test.go` — enum literals + EnumLiteral round-trip
-7. `bench_structs_test.go` — flat/wide structs, tags, omitempty
-8. `bench_tuples_test.go` — tuples/arrays, nested arrays, slices/arrays decode
-9. `bench_nested_test.go` — deep nesting + realistic build.zig.zon (large doc) round-trip
-10. `bench_reflect_test.go` — maps, pointers, decode-into-`any`, custom Marshaler/Unmarshaler
-
-Each agent: package `zon` (white-box, may hit internal lex/parse), unique symbol prefix,
-`-benchmem`, no shared package-level helpers (avoid duplicate-symbol build breaks).
-
-## Notes log
-
-- 2026-05-22: Library implemented and green. Started validation+benchmark planning.
-  Flagged that benchmarks ≠ validation, and that 10 parallel agents need isolation
-  because the package compiles as a whole. CLI design parked pending approval.
+- 2026-05-22: Initial implementation and preliminary validation; CLI design parked.
+- 2026-10-24: User authorized fresh validation and CLI implementation, including
+  revising previous decisions. Reused the earlier Delta conformance corpus,
+  independently refreshed its reference results, and corrected further defects.
+  The earlier claim that only leading-zero decimal integers were wrong was
+  incomplete; CONFORMANCE.md records the current results.

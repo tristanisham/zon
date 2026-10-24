@@ -11,6 +11,9 @@ import (
 // tokenEOF. Comments and whitespace are discarded.
 func lex(src string) ([]token, error) {
 	l := &lexer{src: src, line: 1, col: 1}
+	if strings.HasPrefix(src, "\xef\xbb\xbf") {
+		l.pos = 3
+	}
 	var toks []token
 	for {
 		tok, err := l.scan()
@@ -70,25 +73,42 @@ func (l *lexer) errorf(line, col int, format string, args ...any) error {
 }
 
 // skipTrivia consumes whitespace and // line comments.
-func (l *lexer) skipTrivia() {
+func (l *lexer) skipTrivia() error {
 	for !l.atEnd() {
 		c := l.cur()
 		switch {
 		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
 			l.advance()
 		case c == '/' && l.at(1) == '/':
-			for !l.atEnd() && l.cur() != '\n' {
-				l.advance()
+			if err := l.scanComment(); err != nil {
+				return err
 			}
 		default:
-			return
+			return nil
 		}
 	}
+	return nil
+}
+
+// scanComment validates and consumes an ordinary line comment.
+func (l *lexer) scanComment() error {
+	if l.at(2) == '!' || (l.at(2) == '/' && l.at(3) != '/') {
+		return l.errorf(l.line, l.col, "documentation comments are not allowed in ZON")
+	}
+	for !l.atEnd() && l.cur() != '\n' {
+		if invalidLineByte(l.cur()) && !(l.cur() == '\r' && l.at(1) == '\n') {
+			return l.errorf(l.line, l.col, "invalid byte in comment")
+		}
+		l.advance()
+	}
+	return nil
 }
 
 // scan scans and returns the next token from the source input.
 func (l *lexer) scan() (token, error) {
-	l.skipTrivia()
+	if err := l.skipTrivia(); err != nil {
+		return token{}, err
+	}
 	line, col := l.line, l.col
 	if l.atEnd() {
 		return token{kind: tokenEOF, line: line, col: col}, nil
@@ -102,6 +122,9 @@ func (l *lexer) scan() (token, error) {
 	case c == '.':
 		l.advance()
 		return token{kind: tokenDot, line: line, col: col}, nil
+	case c == '{':
+		l.advance()
+		return token{kind: tokenLBrace, line: line, col: col}, nil
 	case c == '}':
 		l.advance()
 		return token{kind: tokenRBrace, line: line, col: col}, nil
@@ -125,12 +148,7 @@ func (l *lexer) scan() (token, error) {
 	case c == '\'':
 		return l.scanChar(line, col)
 	case c == '@' && l.at(1) == '"':
-		l.advance() // @
-		s, err := l.scanStringBody(line, col)
-		if err != nil {
-			return token{}, err
-		}
-		return token{kind: tokenIdent, value: s, line: line, col: col}, nil
+		return l.scanQuotedIdentifier(line, col)
 	case isDigit(c):
 		return l.scanNumber(line, col)
 	case isIdentStart(c):
@@ -144,6 +162,18 @@ func (l *lexer) scan() (token, error) {
 	}
 }
 
+func (l *lexer) scanQuotedIdentifier(line, col int) (token, error) {
+	l.advance() // @
+	name, err := l.scanStringBody(line, col)
+	if err != nil {
+		return token{}, err
+	}
+	if err := checkIdentifier(name); err != nil {
+		return token{}, l.errorf(line, col, "%s", err)
+	}
+	return token{kind: tokenQuotedIdent, value: name, line: line, col: col}, nil
+}
+
 // scanStringBody reads a double-quoted string starting at the current quote and
 // returns the decoded contents.
 func (l *lexer) scanStringBody(line, col int) (string, error) {
@@ -154,35 +184,45 @@ func (l *lexer) scanStringBody(line, col int) (string, error) {
 			return "", l.errorf(line, col, "unterminated string literal")
 		}
 		c := l.cur()
+		if c < 0x20 || c == 0x7f {
+			return "", l.errorf(l.line, l.col, "unescaped control byte in string")
+		}
 		if c == '"' {
 			l.advance()
 			return b.String(), nil
 		}
 		if c == '\\' {
-			// In a string, \xNN is a raw byte escape (it may produce bytes that
-			// are not valid UTF-8). Only \u{...} introduces a codepoint. This
-			// differs from a character literal, where \xNN is an integer
-			// codepoint, so it is handled here rather than in scanEscape.
-			if l.at(1) == 'x' {
-				l.advance() // backslash
-				l.advance() // x
-				v, err := l.readHex(2)
-				if err != nil {
-					return "", err
-				}
-				b.WriteByte(byte(v))
-				continue
-			}
-			r, err := l.scanEscape(line, col)
-			if err != nil {
+			if err := l.scanStringEscape(&b, line, col); err != nil {
 				return "", err
 			}
-			b.WriteRune(r)
 			continue
 		}
 		b.WriteByte(c)
 		l.advance()
 	}
+}
+
+// String hex escapes are bytes; other escapes must encode Unicode scalars.
+func (l *lexer) scanStringEscape(b *strings.Builder, line, col int) error {
+	if l.at(1) == 'x' {
+		l.advance()
+		l.advance()
+		value, err := l.readHex(2)
+		if err != nil {
+			return err
+		}
+		b.WriteByte(byte(value))
+		return nil
+	}
+	r, err := l.scanEscape(line, col)
+	if err != nil {
+		return err
+	}
+	if !utf8.ValidRune(r) {
+		return l.errorf(line, col, "invalid Unicode scalar value")
+	}
+	b.WriteRune(r)
+	return nil
 }
 
 // scanEscape consumes a backslash escape sequence and returns its rune value.
@@ -243,6 +283,9 @@ func (l *lexer) readUnicodeEscape() (rune, error) {
 		if d < 0 {
 			return 0, l.errorf(l.line, l.col, "invalid hex digit in \\u escape")
 		}
+		if v > (utf8.MaxRune-rune(d))/16 {
+			return 0, l.errorf(l.line, l.col, "Unicode escape out of range")
+		}
 		v = v*16 + rune(d)
 		count++
 	}
@@ -271,6 +314,9 @@ func (l *lexer) scanChar(line, col int) (token, error) {
 		}
 		r = e
 	} else {
+		if l.cur() < 0x20 || l.cur() == 0x7f || l.cur() == '\'' {
+			return token{}, l.errorf(line, col, "invalid character literal")
+		}
 		rr, size := utf8.DecodeRuneInString(l.src[l.pos:])
 		if rr == utf8.RuneError && size <= 1 {
 			return token{}, l.errorf(line, col, "invalid character literal")
@@ -284,7 +330,7 @@ func (l *lexer) scanChar(line, col int) (token, error) {
 		return token{}, l.errorf(line, col, "unterminated character literal")
 	}
 	l.advance() // closing '
-	return token{kind: tokenInt, value: strconv.Itoa(int(r)), line: line, col: col}, nil
+	return token{kind: tokenChar, value: strconv.Itoa(int(r)), line: line, col: col}, nil
 }
 
 // scanMultilineString reads one or more consecutive \\ lines and joins their
@@ -293,23 +339,17 @@ func (l *lexer) scanMultilineString(line, col int) (token, error) {
 	var b strings.Builder
 	first := true
 	for {
-		l.advance() // first backslash
-		l.advance() // second backslash
 		if !first {
 			b.WriteByte('\n')
 		}
 		first = false
-		for !l.atEnd() && l.cur() != '\n' {
-			b.WriteByte(l.advance())
+		if err := l.scanMultilineLine(&b); err != nil {
+			return token{}, err
 		}
-		if !l.atEnd() {
-			l.advance() // consume newline
-		}
-		// A continuation line may begin after leading spaces/tabs, but a blank
-		// line ends the literal.
+		// Whitespace and ordinary comments do not split adjacent multiline tokens.
 		save, sl, sc := l.pos, l.line, l.col
-		for l.cur() == ' ' || l.cur() == '\t' || l.cur() == '\r' {
-			l.advance()
+		if err := l.skipTrivia(); err != nil {
+			return token{}, err
 		}
 		if l.cur() == '\\' && l.at(1) == '\\' {
 			continue
@@ -319,72 +359,57 @@ func (l *lexer) scanMultilineString(line, col int) (token, error) {
 	}
 }
 
+// scanMultilineLine consumes a single \\ line, including its line ending.
+func (l *lexer) scanMultilineLine(b *strings.Builder) error {
+	l.advance()
+	l.advance() // \\
+	for !l.atEnd() && l.cur() != '\n' {
+		if l.cur() == '\r' && l.at(1) == '\n' {
+			l.advance()
+			break
+		}
+		if invalidLineByte(l.cur()) {
+			return l.errorf(l.line, l.col, "invalid byte in multiline string")
+		}
+		b.WriteByte(l.advance())
+	}
+	if !l.atEnd() {
+		l.advance()
+	}
+	return nil
+}
+
 // scanNumber reads an integer or floating-point literal and preserves its raw
 // text. It recognizes hex/octal/binary prefixes, underscores, decimal and hex
 // exponents. Leading zeros on decimal integers are rejected, matching Zig.
 func (l *lexer) scanNumber(line, col int) (token, error) {
 	start := l.pos
-	isFloat := false
-	switch {
-	case l.cur() == '0' && (l.at(1) == 'x' || l.at(1) == 'X'):
-		l.advance()
-		l.advance()
-		l.consumeWhile(isHexOrUnderscore)
-		if l.cur() == '.' {
-			isFloat = true
+	for !l.atEnd() {
+		c := l.cur()
+		if isIdentPart(c) || c == '.' {
 			l.advance()
-			l.consumeWhile(isHexOrUnderscore)
+			continue
 		}
-		if l.cur() == 'p' || l.cur() == 'P' {
-			isFloat = true
+		if (c == '+' || c == '-') && l.pos > start && strings.ContainsRune("eEpP", rune(l.src[l.pos-1])) {
 			l.advance()
-			if l.cur() == '+' || l.cur() == '-' {
-				l.advance()
-			}
-			l.consumeWhile(isDigitOrUnderscore)
+			continue
 		}
-	case l.cur() == '0' && (l.at(1) == 'o' || l.at(1) == 'O'):
-		l.advance()
-		l.advance()
-		l.consumeWhile(isDigitOrUnderscore)
-	case l.cur() == '0' && (l.at(1) == 'b' || l.at(1) == 'B'):
-		l.advance()
-		l.advance()
-		l.consumeWhile(isDigitOrUnderscore)
-	default:
-		l.consumeWhile(isDigitOrUnderscore)
-		if l.cur() == '.' && isDigit(l.at(1)) {
-			isFloat = true
-			l.advance()
-			l.consumeWhile(isDigitOrUnderscore)
-		}
-		if l.cur() == 'e' || l.cur() == 'E' {
-			isFloat = true
-			l.advance()
-			if l.cur() == '+' || l.cur() == '-' {
-				l.advance()
-			}
-			l.consumeWhile(isDigitOrUnderscore)
-		}
+		break
 	}
 	raw := l.src[start:l.pos]
+	isFloat, valid := numberSyntax(raw)
+	if !valid {
+		return token{}, l.errorf(line, col, "invalid number literal %q", raw)
+	}
 	kind := tokenInt
 	if isFloat {
 		kind = tokenFloat
-	} else if len(raw) > 1 && raw[0] == '0' && (isDigit(raw[1]) || raw[1] == '_') {
-		// Decimal integer with a leading zero. Zig rejects these; octal must be
-		// written 0o.... The raw[1] guard excludes the 0x/0o/0b prefixes.
-		return token{}, l.errorf(line, col, "leading zeros are not allowed in integer literals")
 	}
 	return token{kind: kind, value: raw, line: line, col: col}, nil
 }
 
-// consumeWhile advances the lexer cursor as long as the predicate function returns true.
-func (l *lexer) consumeWhile(pred func(byte) bool) {
-	for !l.atEnd() && pred(l.cur()) {
-		l.advance()
-	}
-}
+// invalidLineByte identifies bytes forbidden verbatim in comments and multiline strings.
+func invalidLineByte(c byte) bool { return c < 0x20 && c != '\n' || c == 0x7f }
 
 // isDigit reports whether c is a decimal digit.
 func isDigit(c byte) bool { return c >= '0' && c <= '9' }
@@ -396,12 +421,6 @@ func isIdentStart(c byte) bool {
 
 // isIdentPart reports whether c is a valid interior character for a bare identifier.
 func isIdentPart(c byte) bool { return isIdentStart(c) || isDigit(c) }
-
-// isDigitOrUnderscore reports whether c is a decimal digit or an underscore separator.
-func isDigitOrUnderscore(c byte) bool { return isDigit(c) || c == '_' }
-
-// isHexOrUnderscore reports whether c is a valid hexadecimal digit or an underscore separator.
-func isHexOrUnderscore(c byte) bool { return hexVal(c) >= 0 || c == '_' }
 
 // hexVal returns the integer value of a hexadecimal digit character, or -1 if invalid.
 func hexVal(c byte) int {

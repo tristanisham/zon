@@ -1,0 +1,59 @@
+.TH ZON 1 "October 2026" "zon" "User Commands"
+.SH NAME
+zon \- query and convert Zig Object Notation with jq filters
+.SH SYNOPSIS
+.B zon
+.RI [ flags ] " [FILTER] [files...]"
+.SH DESCRIPTION
+Runs a jq filter using gojq. FILTER defaults to . (identity).
+Reads files in order, or standard input when no files are given.
+Use - to read standard input among files. Supply an explicit filter when
+passing files. Each ZON input is one document; JSON input can contain a
+sequence of values. Each filter result is emitted separately.
+.SH OPTIONS
+.TP
+.BI "--in " auto|zon|json
+Input format (default auto). Dot-prefixed input is ZON; objects and arrays
+starting with { or [ are JSON. Bare scalars try ZON, then JSON.
+.TP
+.BI "--to " zon|json|yaml|toml
+Output format (default zon).
+.TP
+.B -c, --compact
+Compact ZON/JSON, YAML flow style, or inline nested TOML tables.
+.TP
+.B -r, --raw-output
+Print string results without quotes. Other results use the selected format.
+.TP
+.B -n, --null-input
+Run once with null without reading input.
+.TP
+.B -S, --sort-keys
+Sort object keys. Output keys are always sorted.
+.TP
+.B --version
+Print version.
+.TP
+.B -h, --help
+Print help.
+.SH EXAMPLES
+.nf
+zon . build.zig.zon
+zon --to json . build.zig.zon
+zon -r '.version' build.zig.zon
+zon '.dependencies | keys' build.zig.zon
+zon --in json --to zon . data.json
+zon -n '{answer: 6 * 7}'
+.fi
+.SH LIMITATIONS
+Enum literals become strings. Empty .{} becomes an array in generic decoding.
+JSON output rejects NaN and infinity and replaces invalid UTF-8 string bytes.
+YAML results are separated with document markers.
+TOML requires one object result, cannot represent null, and requires signed
+64-bit integers. Compact TOML retains a line per top-level key.
+.SH EXIT STATUS
+Zero on success. Nonzero on input, filter, or output errors. Diagnostics are
+written to standard error. The jq halt_error function retains its exit code.
+.SH SEE ALSO
+.BR jq (1),
+.BR zig (1)
